@@ -1,0 +1,320 @@
+//! Agent configuration (`agent.toml`).
+//!
+//! The owner's limits live here and are the local source of truth: the server
+//! can never relax them.
+
+use std::path::{Path, PathBuf};
+
+use chrono::{Datelike, NaiveTime, Weekday};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("cannot read {path}: {source}")]
+    Read { path: PathBuf, source: std::io::Error },
+    #[error("invalid config: {0}")]
+    Parse(#[from] toml::de::Error),
+    #[error("invalid config: {0}")]
+    Invalid(String),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    pub server: ServerConfig,
+    #[serde(default)]
+    pub agent: AgentConfig,
+    #[serde(default)]
+    pub limits: Limits,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ServerConfig {
+    /// Base URL of the control plane, e.g. `https://ghost.example.com`.
+    pub url: String,
+    /// PEM file with the CA(s) to trust. When set, public roots are NOT trusted (pinning).
+    pub ca_cert: Option<PathBuf>,
+    /// Allow plain HTTP to loopback addresses only (development).
+    #[serde(default)]
+    pub allow_insecure_localhost: bool,
+    #[serde(default = "default_timeout")]
+    pub request_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfig {
+    /// Display name. Defaults to the host name.
+    pub name: Option<String>,
+    /// Where identity, credentials and logs are stored.
+    pub data_dir: Option<PathBuf>,
+    #[serde(default = "default_max_tasks")]
+    pub max_concurrent_tasks: u32,
+    /// Monitoring sample period.
+    #[serde(default = "default_sample_secs")]
+    pub sample_interval_secs: u64,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            name: None,
+            data_dir: None,
+            max_concurrent_tasks: default_max_tasks(),
+            sample_interval_secs: default_sample_secs(),
+            log_level: default_log_level(),
+        }
+    }
+}
+
+/// Owner-defined limits. Defaults are deliberately conservative.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct Limits {
+    /// Master switch.
+    pub enabled: bool,
+    /// Max CPU the agent (and its workloads) may use, % of the whole machine.
+    pub max_cpu_percent: f32,
+    /// Max RAM for the agent and its workloads.
+    pub max_ram_mb: u64,
+    /// Max GPU utilisation attributable to ghost (0 = GPU not shared).
+    pub max_gpu_percent: f32,
+    /// Stop when any sensor reports more than this.
+    pub max_temperature_c: f32,
+    /// Owner's own CPU use above this → yield.
+    pub user_cpu_threshold_percent: f32,
+    /// Machine RAM use above this → yield.
+    pub user_ram_threshold_percent: f32,
+    /// Required seconds without keyboard/mouse input. 0 disables the check.
+    pub require_idle_secs: u64,
+    /// Seconds conditions must stay good before becoming available again.
+    pub resume_after_secs: u64,
+    pub pause_on_battery: bool,
+    /// Allowed windows. Empty = always.
+    pub schedule: Vec<ScheduleWindow>,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_cpu_percent: 25.0,
+            max_ram_mb: 2048,
+            max_gpu_percent: 0.0,
+            max_temperature_c: 85.0,
+            user_cpu_threshold_percent: 30.0,
+            user_ram_threshold_percent: 80.0,
+            require_idle_secs: 300,
+            resume_after_secs: 60,
+            pause_on_battery: true,
+            schedule: Vec::new(),
+        }
+    }
+}
+
+/// A daily window on the given days, e.g. Mon-Fri 22:00–07:00 (may cross midnight).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleWindow {
+    /// Day names: "mon".."sun". Empty = every day.
+    #[serde(default)]
+    pub days: Vec<String>,
+    /// "HH:MM" local time.
+    pub from: String,
+    pub to: String,
+}
+
+impl ScheduleWindow {
+    fn parse(&self) -> Result<(Vec<Weekday>, NaiveTime, NaiveTime), ConfigError> {
+        let days = self
+            .days
+            .iter()
+            .map(|d| d.parse::<Weekday>().map_err(|_| ConfigError::Invalid(format!("bad weekday '{d}'"))))
+            .collect::<Result<Vec<_>, _>>()?;
+        let t = |s: &str| {
+            NaiveTime::parse_from_str(s, "%H:%M").map_err(|_| ConfigError::Invalid(format!("bad time '{s}' (HH:MM)")))
+        };
+        Ok((days, t(&self.from)?, t(&self.to)?))
+    }
+
+    /// Whether `now` (local) falls in this window. A window that crosses midnight
+    /// belongs to the day it starts on.
+    pub fn contains(&self, weekday: Weekday, time: NaiveTime) -> bool {
+        let Ok((days, from, to)) = self.parse() else { return false };
+        let day_ok = |d: Weekday| days.is_empty() || days.contains(&d);
+        if from <= to {
+            day_ok(weekday) && time >= from && time < to
+        } else {
+            (day_ok(weekday) && time >= from) || (day_ok(weekday.pred()) && time < to)
+        }
+    }
+}
+
+impl Limits {
+    pub fn in_schedule(&self, now: chrono::DateTime<chrono::Local>) -> bool {
+        self.schedule.is_empty() || self.schedule.iter().any(|w| w.contains(now.weekday(), now.time()))
+    }
+}
+
+fn default_timeout() -> u64 {
+    15
+}
+fn default_max_tasks() -> u32 {
+    1
+}
+fn default_sample_secs() -> u64 {
+    2
+}
+fn default_log_level() -> String {
+    "info".into()
+}
+
+impl Config {
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        let raw = std::fs::read_to_string(path).map_err(|source| ConfigError::Read { path: path.into(), source })?;
+        Self::parse(&raw)
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, ConfigError> {
+        let cfg: Config = toml::from_str(raw)?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let bad = |m: &str| Err(ConfigError::Invalid(m.into()));
+        let url =
+            reqwest::Url::parse(&self.server.url).map_err(|e| ConfigError::Invalid(format!("server.url: {e}")))?;
+        match url.scheme() {
+            "https" => {}
+            "http" if self.server.allow_insecure_localhost && crate::security::tls::is_loopback(&url) => {}
+            "http" => return bad("server.url must use https (http only for loopback with allow_insecure_localhost)"),
+            _ => return bad("server.url must be http(s)"),
+        }
+        if !(1..=300).contains(&self.server.request_timeout_secs) {
+            return bad("server.request_timeout_secs must be 1..=300");
+        }
+        if !(1..=256).contains(&self.agent.max_concurrent_tasks) {
+            return bad("agent.max_concurrent_tasks must be 1..=256");
+        }
+        if !(1..=60).contains(&self.agent.sample_interval_secs) {
+            return bad("agent.sample_interval_secs must be 1..=60");
+        }
+        let l = &self.limits;
+        for (name, v) in [
+            ("max_cpu_percent", l.max_cpu_percent),
+            ("max_gpu_percent", l.max_gpu_percent),
+            ("user_cpu_threshold_percent", l.user_cpu_threshold_percent),
+            ("user_ram_threshold_percent", l.user_ram_threshold_percent),
+        ] {
+            if !(0.0..=100.0).contains(&v) {
+                return Err(ConfigError::Invalid(format!("limits.{name} must be 0..=100")));
+            }
+        }
+        if !(30.0..=110.0).contains(&l.max_temperature_c) {
+            return bad("limits.max_temperature_c must be 30..=110");
+        }
+        for w in &l.schedule {
+            w.parse()?;
+        }
+        Ok(())
+    }
+
+    /// `%ProgramData%\ghost` on Windows, `$XDG_DATA_HOME/ghost` or `~/.local/share/ghost` elsewhere.
+    pub fn data_dir(&self) -> PathBuf {
+        if let Some(d) = &self.agent.data_dir {
+            return d.clone();
+        }
+        default_data_dir()
+    }
+
+    pub fn display_name(&self) -> String {
+        self.agent.name.clone().or_else(sysinfo::System::host_name).unwrap_or_else(|| "ghost-worker".into())
+    }
+}
+
+pub fn default_data_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| r"C:\ProgramData".into());
+        base.join("ghost")
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(x).join("ghost");
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| ".".into());
+        home.join(".local/share/ghost")
+    }
+}
+
+pub fn default_config_path() -> PathBuf {
+    default_data_dir().join("agent.toml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveTime;
+
+    const MIN: &str = "[server]\nurl = \"https://ghost.example.com\"\n";
+
+    #[test]
+    fn defaults_are_conservative() {
+        let c = Config::parse(MIN).unwrap();
+        assert!(c.limits.enabled);
+        assert_eq!(c.limits.max_cpu_percent, 25.0);
+        assert_eq!(c.limits.max_gpu_percent, 0.0);
+        assert!(c.limits.pause_on_battery);
+        assert_eq!(c.agent.max_concurrent_tasks, 1);
+    }
+
+    #[test]
+    fn rejects_plain_http_except_loopback_opt_in() {
+        let http = "[server]\nurl = \"http://ghost.example.com\"\nallow_insecure_localhost = true\n";
+        assert!(Config::parse(http).is_err());
+        let local = "[server]\nurl = \"http://127.0.0.1:8080\"\n";
+        assert!(Config::parse(local).is_err());
+        let local_ok = "[server]\nurl = \"http://127.0.0.1:8080\"\nallow_insecure_localhost = true\n";
+        assert!(Config::parse(local_ok).is_ok());
+    }
+
+    #[test]
+    fn rejects_unknown_fields_and_bad_values() {
+        assert!(Config::parse(&format!("{MIN}[limits]\nmax_cpu = 5\n")).is_err());
+        assert!(Config::parse(&format!("{MIN}[limits]\nmax_cpu_percent = 150\n")).is_err());
+        let bad_time = format!("{MIN}[[limits.schedule]]\nfrom = \"25:00\"\nto = \"07:00\"\n");
+        assert!(Config::parse(&bad_time).is_err());
+        let bad_day = format!("{MIN}[[limits.schedule]]\ndays = [\"funday\"]\nfrom = \"22:00\"\nto = \"07:00\"\n");
+        assert!(Config::parse(&bad_day).is_err());
+    }
+
+    #[test]
+    fn schedule_windows_including_midnight_crossing() {
+        let w = ScheduleWindow { days: vec!["mon".into(), "tue".into()], from: "22:00".into(), to: "07:00".into() };
+        let t = |s| NaiveTime::parse_from_str(s, "%H:%M").unwrap();
+        assert!(w.contains(Weekday::Mon, t("23:00")));
+        assert!(w.contains(Weekday::Tue, t("06:59"))); // Monday's window, after midnight
+        assert!(w.contains(Weekday::Wed, t("03:00"))); // Tuesday's window
+        assert!(!w.contains(Weekday::Mon, t("03:00"))); // Sunday not listed
+        assert!(!w.contains(Weekday::Tue, t("12:00")));
+
+        let day = ScheduleWindow { days: vec![], from: "09:00".into(), to: "17:00".into() };
+        assert!(day.contains(Weekday::Sat, t("09:00")));
+        assert!(!day.contains(Weekday::Sat, t("17:00")));
+    }
+}
+
+#[cfg(test)]
+mod example_tests {
+    #[test]
+    fn shipped_example_is_valid() {
+        let raw = include_str!("../../agent.example.toml");
+        let c = super::Config::parse(raw).expect("agent.example.toml must stay valid");
+        assert_eq!(c.limits.schedule.len(), 2);
+    }
+}

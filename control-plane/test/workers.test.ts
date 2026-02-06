@@ -24,6 +24,17 @@ describe('registration', () => {
     expect(second.statusCode).toBe(401);
   });
 
+  it('stores the agent device id', async () => {
+    const deviceId = '0b7f6c1e-8a51-4c1f-9d2e-3f4a5b6c7d8e';
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/v1/workers/register',
+      payload: { enrollmentToken: await enrollmentToken(h), name: 'pc', hardware: HW, deviceId },
+    });
+    const get = await h.app.inject({ url: `/v1/workers/${res.json().workerId}`, headers: auth(h.adminToken) });
+    expect(get.json().deviceId).toBe(deviceId);
+  });
+
   it('rejects expired tokens', async () => {
     const token = await enrollmentToken(h);
     await h.rt.db.query(`UPDATE enrollment_tokens SET expires_at = now() - interval '1 second'`);
