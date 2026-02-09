@@ -2,6 +2,7 @@ use std::{
     io::{BufRead, IsTerminal},
     path::PathBuf,
     process::ExitCode,
+    sync::Arc,
     time::Duration,
 };
 
@@ -11,6 +12,7 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 use ghost_agent::{
+    configuration::settings::SettingsStore,
     configuration::{Config, default_config_path},
     execution, hardware,
     monitoring::{Monitor, Sampler},
@@ -20,7 +22,8 @@ use ghost_agent::{
         client::AGENT_VERSION,
         heartbeat::{Exit, HeartbeatLoop},
     },
-    scheduler::{OwnerControl, Policy},
+    runtime::{AgentInfo, Shared},
+    scheduler::Policy,
     security::{CredentialStore, Credentials, DeviceIdentity},
 };
 
@@ -47,6 +50,13 @@ enum Cmd {
     },
     /// Run the agent: monitoring + heartbeat.
     Run,
+    /// Print the running agent's status (via local IPC) as JSON.
+    Status,
+    /// Start, pause or stop sharing on the running agent.
+    Control {
+        #[arg(value_enum)]
+        action: ControlArg,
+    },
     /// Print the hardware inventory as JSON.
     Hardware,
     /// Print resource samples as JSON lines.
@@ -54,6 +64,13 @@ enum Cmd {
         #[arg(long, default_value_t = 3)]
         count: u32,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ControlArg {
+    Start,
+    Pause,
+    Stop,
 }
 
 // Distinct exit codes let the service manager decide whether to restart.
@@ -86,9 +103,32 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Cmd::Status => {
+            let cfg = load_config(cli.config)?;
+            let v = ipc_call(&cfg, ghost_ipc::methods::STATUS, serde_json::Value::Null).await?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Control { action } => {
+            let cfg = load_config(cli.config)?;
+            let action = match action {
+                ControlArg::Start => "start",
+                ControlArg::Pause => "pause",
+                ControlArg::Stop => "stop",
+            };
+            let v = ipc_call(&cfg, ghost_ipc::methods::CONTROL, serde_json::json!({ "action": action })).await?;
+            println!("control={} state={}", v["control"], v["state"]);
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Enroll { token, force } => enroll(&load_config(cli.config)?, token, force).await,
         Cmd::Run => run(load_config(cli.config)?).await,
     }
+}
+
+async fn ipc_call(cfg: &Config, method: &str, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    let ep = ghost_ipc::Endpoint::default_for(&cfg.data_dir());
+    let mut c = ghost_ipc::IpcClient::connect(&ep).await.context("is the agent running?")?;
+    Ok(c.call(method, params).await?)
 }
 
 fn load_config(path: Option<PathBuf>) -> anyhow::Result<Config> {
@@ -170,9 +210,36 @@ async fn run(cfg: Config) -> anyhow::Result<ExitCode> {
     // ~30 s smoothing window.
     let window = (30 / cfg.agent.sample_interval_secs).max(1) as usize;
     let snapshots = Monitor::spawn(period, window);
-    let (_control_tx, control) = watch::channel(OwnerControl::Resume);
-    let (shutdown_tx, shutdown) = watch::channel(false);
 
+    let settings = SettingsStore::new(&data_dir);
+    let limits = settings.load_limits(&cfg.limits)?;
+    let control = settings.load_control();
+    info!(?control, "owner control restored");
+    let shared = Arc::new(Shared::new(
+        AgentInfo {
+            version: AGENT_VERSION.into(),
+            name: cfg.display_name(),
+            worker_id: creds.worker_id,
+            device_id: identity.device_id,
+            server_url: cfg.server.url.clone(),
+            execution_available: execution::AVAILABLE,
+        },
+        hw,
+        snapshots,
+        settings,
+        control,
+        limits.clone(),
+    ));
+
+    let ipc_endpoint = ghost_ipc::Endpoint::default_for(&data_dir);
+    let ipc_shared = shared.clone();
+    tokio::spawn(async move {
+        if let Err(e) = ghost_agent::ipc::run(ipc_shared, ipc_endpoint).await {
+            error!(error = %e, "IPC server failed; desktop app will not connect");
+        }
+    });
+
+    let (shutdown_tx, shutdown) = watch::channel(false);
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
         info!("shutdown requested");
@@ -180,10 +247,9 @@ async fn run(cfg: Config) -> anyhow::Result<ExitCode> {
     });
 
     let hb = HeartbeatLoop {
-        client: ApiClient::new(&cfg.server, Some(creds))?,
-        policy: Policy::new(cfg.limits.clone(), execution::AVAILABLE),
-        snapshots,
-        control,
+        client: Arc::new(ApiClient::new(&cfg.server, Some(creds))?),
+        policy: Policy::new(limits, execution::AVAILABLE),
+        shared,
         interval: Duration::from_secs(5),
     };
     Ok(match hb.run(shutdown).await {

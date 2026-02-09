@@ -5,11 +5,16 @@
 //! blocking thread and publishes the latest [`Snapshot`] on a watch channel.
 
 mod platform;
+pub mod presence;
 pub mod sampler;
 #[cfg(windows)]
 mod windows;
 
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use serde::Serialize;
 use tokio::sync::watch;
@@ -34,6 +39,9 @@ pub struct Sample {
     /// Seconds since last keyboard/mouse input in the interactive session.
     pub user_idle_secs: Option<u64>,
     pub on_battery: Option<bool>,
+    /// Running process names, normalized (lowercase, no ".exe"). Not sent anywhere.
+    #[serde(skip)]
+    pub processes: Arc<HashSet<String>>,
 }
 
 impl Sample {
@@ -102,6 +110,7 @@ impl Window {
             temperature_c: avg_opt(|s| s.temperature_c),
             user_idle_secs: latest.user_idle_secs,
             on_battery: latest.on_battery,
+            processes: latest.processes.clone(),
         };
         let max_temperature_c = self.buf.iter().filter_map(|s| s.temperature_c).reduce(f32::max);
         Snapshot { latest, avg, max_temperature_c, samples: self.buf.len() }

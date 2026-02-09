@@ -94,6 +94,34 @@ describe('happy path', () => {
   });
 });
 
+describe('worker stats', () => {
+  it('counts outcomes and credits only successful compute time', async () => {
+    const j = await createJob(h, op, { name: 'render', inputs: [{}, {}], maxRetries: 0 });
+    const [a] = await claim(w);
+    await post(w, `/v1/worker/leases/${a.leaseId}/accept`);
+    await h.rt.db.query(`UPDATE leases SET accepted_at = now() - interval '90 seconds' WHERE id = $1`, [a.leaseId]);
+    await succeed(w, a.leaseId, { ok: true });
+    const [c] = await claim(w);
+    await post(w, `/v1/worker/leases/${c.leaseId}/accept`);
+    await post(w, `/v1/worker/leases/${c.leaseId}/result`, { status: 'failed', error: 'x' });
+
+    const res = await h.app.inject({ url: '/v1/worker/me/stats?recent=5', headers: auth(w.token) });
+    expect(res.statusCode).toBe(200);
+    const s = res.json();
+    expect(s.tasks).toEqual({ succeeded: 1, failed: 1, preempted: 0, active: 0 });
+    expect(s.credits).toBeGreaterThanOrEqual(1.5);
+    expect(s.credits).toBeLessThan(1.6);
+    expect(s.recent).toHaveLength(2);
+    expect(s.recent[0]).toMatchObject({ jobId: j.id, jobName: 'render', status: 'failed', module: { name: 'monte-carlo-pi' } });
+
+    // Users cannot call worker endpoints; other workers see only their own stats.
+    expect((await h.app.inject({ url: '/v1/worker/me/stats', headers: auth(op) })).statusCode).toBe(401);
+    const other = await registerWorker(h, { name: 'other' });
+    const o = await h.app.inject({ url: '/v1/worker/me/stats', headers: auth(other.token) });
+    expect(o.json()).toMatchObject({ tasks: { succeeded: 0 }, credits: 0, recent: [] });
+  });
+});
+
 describe('validation & ownership', () => {
   it('rejects progress before accept and bad hashes', async () => {
     await createJob(h, op, { inputs: [{}] });

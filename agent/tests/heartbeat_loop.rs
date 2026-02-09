@@ -2,14 +2,17 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{creds, server_cfg};
 use ghost_agent::configuration::Limits;
+use ghost_agent::configuration::settings::{OwnerControl, SettingsStore};
 use ghost_agent::monitoring::{Sample, Snapshot};
 use ghost_agent::networking::ApiClient;
 use ghost_agent::networking::heartbeat::{Exit, HeartbeatLoop};
-use ghost_agent::scheduler::{OwnerControl, Policy};
+use ghost_agent::runtime::{AgentInfo, ConnectionStatus, Shared};
+use ghost_agent::scheduler::Policy;
 use serde_json::json;
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -42,17 +45,49 @@ fn hb_body(offers: serde_json::Value) -> ResponseTemplate {
         .set_body_json(json!({ "heartbeatIntervalSeconds": 1, "cancelLeaseIds": [], "offers": offers }))
 }
 
-fn make_loop(s: &MockServer) -> (HeartbeatLoop, watch::Sender<Snapshot>, watch::Sender<OwnerControl>) {
+struct Rig {
+    hb: HeartbeatLoop,
+    shared: Arc<Shared>,
+    _snap: watch::Sender<Snapshot>,
+    _dir: tempfile::TempDir,
+}
+
+fn make_loop(s: &MockServer) -> Rig {
     let (snap_tx, snapshots) = watch::channel(snapshot());
-    let (ctl_tx, control) = watch::channel(OwnerControl::Resume);
-    let hb = HeartbeatLoop {
-        client: ApiClient::new(&server_cfg(&s.uri()), Some(creds(&s.uri()))).unwrap(),
-        policy: Policy::new(Limits { resume_after_secs: 0, require_idle_secs: 0, ..Limits::default() }, false),
+    let dir = tempfile::tempdir().unwrap();
+    let limits = Limits { resume_after_secs: 0, require_idle_secs: 0, ..Limits::default() };
+    let shared = Arc::new(Shared::new(
+        AgentInfo {
+            version: "t".into(),
+            name: "pc".into(),
+            worker_id: Uuid::new_v4(),
+            device_id: Uuid::new_v4(),
+            server_url: s.uri(),
+            execution_available: false,
+        },
+        ghost_agent::hardware::detect(),
         snapshots,
-        control,
+        SettingsStore::new(dir.path()),
+        OwnerControl::Started,
+        limits.clone(),
+    ));
+    let hb = HeartbeatLoop {
+        client: Arc::new(ApiClient::new(&server_cfg(&s.uri()), Some(creds(&s.uri()))).unwrap()),
+        policy: Policy::new(limits, false),
+        shared: shared.clone(),
         interval: Duration::from_millis(50),
     };
-    (hb, snap_tx, ctl_tx)
+    Rig { hb, shared, _snap: snap_tx, _dir: dir }
+}
+
+async fn mount_stats(s: &MockServer) {
+    Mock::given(path("/v1/worker/me/stats"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tasks": { "succeeded": 3, "failed": 1, "preempted": 0, "active": 0 },
+            "computeSeconds": 600, "credits": 10.0, "recent": []
+        })))
+        .mount(s)
+        .await;
 }
 
 #[tokio::test]
@@ -90,10 +125,17 @@ async fn reports_usage_declines_offers_and_says_goodbye() {
         .mount(&s)
         .await;
 
-    let (hb, _snap, _ctl) = make_loop(&s);
+    mount_stats(&s).await;
+    let rig = make_loop(&s);
+    let shared = rig.shared.clone();
     let (stop_tx, stop) = watch::channel(false);
-    let task = tokio::spawn(hb.run(stop));
+    let task = tokio::spawn(rig.hb.run(stop));
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // The desktop app sees connection, decision and stats.
+    let st = shared.status();
+    assert_eq!(st.connection.status, ConnectionStatus::Connected);
+    assert_eq!(st.state, Some(ghost_agent::scheduler::WorkerState::Waiting));
+    assert_eq!(st.stats.as_ref().map(|x| x.credits), Some(10.0));
     stop_tx.send(true).unwrap();
     assert_eq!(task.await.unwrap(), Exit::Shutdown);
 }
@@ -113,13 +155,34 @@ async fn owner_pause_is_reported_immediately() {
         .mount(&s)
         .await;
 
-    let (hb, _snap, ctl) = make_loop(&s);
+    let rig = make_loop(&s);
+    let shared = rig.shared.clone();
     let (stop_tx, stop) = watch::channel(false);
-    let task = tokio::spawn(hb.run(stop));
+    let task = tokio::spawn(rig.hb.run(stop));
     // First heartbeat sets a 300 s interval; the pause must not wait for it.
     tokio::time::sleep(Duration::from_millis(150)).await;
-    ctl.send(OwnerControl::Pause).unwrap();
+    shared.set_control(OwnerControl::Paused).unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
+    stop_tx.send(true).unwrap();
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn new_limits_apply_immediately() {
+    let s = MockServer::start().await;
+    mount_auth(&s).await;
+    Mock::given(path("/v1/worker/heartbeat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "heartbeatIntervalSeconds": 300 })))
+        .mount(&s)
+        .await;
+    let rig = make_loop(&s);
+    let shared = rig.shared.clone();
+    let (stop_tx, stop) = watch::channel(false);
+    let task = tokio::spawn(rig.hb.run(stop));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    shared.set_limits(Limits { enabled: false, ..Limits::default() }).unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(shared.status().state, Some(ghost_agent::scheduler::WorkerState::Stopped));
     stop_tx.send(true).unwrap();
     task.await.unwrap();
 }
@@ -136,10 +199,12 @@ async fn exits_on_revocation() {
         )
         .mount(&s)
         .await;
-    let (hb, _s, _c) = make_loop(&s);
+    let rig = make_loop(&s);
+    let shared = rig.shared.clone();
     let (_tx, stop) = watch::channel(false);
-    let exit = tokio::time::timeout(Duration::from_secs(5), hb.run(stop)).await.unwrap();
+    let exit = tokio::time::timeout(Duration::from_secs(5), rig.hb.run(stop)).await.unwrap();
     assert_eq!(exit, Exit::Revoked);
+    assert_eq!(shared.status().connection.status, ConnectionStatus::Revoked);
 }
 
 #[tokio::test]
@@ -152,9 +217,9 @@ async fn retries_with_backoff_after_server_errors() {
         .mount(&s)
         .await;
     Mock::given(path("/v1/worker/heartbeat")).respond_with(hb_body(json!([]))).expect(1..).mount(&s).await;
-    let (hb, _s, _c) = make_loop(&s);
+    let rig = make_loop(&s);
     let (stop_tx, stop) = watch::channel(false);
-    let task = tokio::spawn(hb.run(stop));
+    let task = tokio::spawn(rig.hb.run(stop));
     // First retry waits 0.5–1 s.
     tokio::time::sleep(Duration::from_millis(1300)).await;
     stop_tx.send(true).unwrap();

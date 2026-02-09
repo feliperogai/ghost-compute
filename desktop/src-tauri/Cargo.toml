@@ -1,0 +1,33 @@
+[package]
+name = "ghost-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "ghost desktop app: status and controls for the local ghost agent"
+
+[lib]
+name = "ghost_desktop_lib"
+# Desktop only: the mobile cdylib/staticlib targets are not built.
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
+ghost-ipc = { path = "../../ipc" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_SystemInformation",
+  "Win32_System_StationsAndDesktops",
+  "Win32_UI_Shell",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

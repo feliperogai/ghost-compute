@@ -133,6 +133,7 @@ mod tests {
             temperature_c: Some(55.55),
             user_idle_secs: None,
             on_battery: Some(false),
+            processes: Default::default(),
         };
         let v = serde_json::to_value(Usage::from(&s)).unwrap();
         let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();

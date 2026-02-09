@@ -3,9 +3,9 @@
 Worker agent for Windows, written in Rust. It detects hardware, monitors resource use,
 applies the owner's limits and talks to the control plane over HTTPS.
 
-**This phase:** hardware detection, monitoring, heartbeat and secure communication.
-Execution, owner IPC (pause/resume/stop from the tray), Windows service mode and
-self-update come next. Until execution exists the agent reports `waiting` and
+**Done:** hardware detection, monitoring, heartbeat, secure communication, and local
+IPC for the desktop app (status, start/pause/stop, settings, presence).
+**Next:** execution, Windows service mode, self-update. Until execution exists the agent reports `waiting` and
 declines any offer, so no task is ever held by it.
 
 ## Use
@@ -15,7 +15,12 @@ ghost-agent hardware                      # inventory as JSON
 ghost-agent sample --count 5              # live samples as JSON lines
 ghost-agent --config agent.toml enroll    # reads the ghe_ token from stdin
 ghost-agent --config agent.toml run
+ghost-agent --config agent.toml status        # what the desktop app sees (JSON)
+ghost-agent --config agent.toml control start # start | pause | stop
 ```
+
+A fresh install starts **stopped**: nothing is shared until the owner starts it.
+The choice (`control.json`) and limits edited in the desktop app (`limits.json`) persist in the data directory.
 
 Config: see [`agent.example.toml`](agent.example.toml). Default path `%ProgramData%\ghost\agent.toml`.
 
@@ -27,7 +32,9 @@ Exit codes of `run`: `0` shutdown · `2` credentials rejected (re-enroll) · `3`
 |---|---|
 | `hardware` | CPU model/cores/threads/ISA features, RAM, GPUs + dedicated VRAM (DXGI), volumes, OS |
 | `monitoring` | CPU (total vs. ghost's own process tree), RAM, GPU utilisation + memory (PDH `GPU Engine`), temperature, input idle time, battery; 30 s smoothing window |
-| `scheduler` | Policy engine: owner controls, schedule, battery, temperature, owner CPU/RAM, idle, cool-down → `waiting / available / running / paused / stopped` + `preempt` |
+| `scheduler` | Policy engine: owner controls, schedule, battery, temperature, owner CPU/RAM, idle, locked-only, full-screen games, priority apps, cool-down → `waiting / available / running / paused / stopped` + `preempt` |
+| `runtime` | Shared state read by the desktop app: connection, decision, stats, presence, workloads |
+| `ipc` | Local IPC server (named pipe, see `../ipc`): `status`, `control`, `settings.get/set`, `presence.report` |
 | `networking` | HTTPS client, token refresh, retries with jittered backoff, heartbeat loop |
 | `security` | TLS policy + CA pinning, device identity, DPAPI-protected credentials, `SecretString` |
 | `configuration` | `agent.toml`, strict validation, conservative defaults |

@@ -18,6 +18,7 @@ sample_interval_secs = 2
 log_level = "info"
 
 # Owner limits. The server can never relax these.
+# Changes made in the desktop app are stored in <data_dir>/limits.json and take precedence.
 [limits]
 enabled = true
 max_cpu_percent = 25            # share of the whole machine for ghost
@@ -29,6 +30,9 @@ user_ram_threshold_percent = 80
 require_idle_secs = 300         # no keyboard/mouse input for 5 min
 resume_after_secs = 60          # conditions must stay good this long
 pause_on_battery = true
+only_when_locked = false        # share only while the session is locked
+pause_during_games = true       # full-screen game / D3D app / presentation
+priority_apps = ["obs64.exe"]   # yield while any of these runs
 
 # Only share at night on weekdays and all weekend. Empty = always.
 [[limits.schedule]]

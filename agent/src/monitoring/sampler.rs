@@ -52,6 +52,13 @@ impl Sampler {
             .fold((0.0f32, 0u64), |(c, m), p| (c + p.cpu_usage(), m + p.memory()));
 
         let (gpu_percent, gpu_memory_used_mb) = self.gpu.sample();
+        let processes: HashSet<String> = self
+            .sys
+            .processes()
+            .values()
+            .filter(|p| p.thread_kind().is_none())
+            .map(|p| crate::configuration::normalize_app_name(&p.name().to_string_lossy()))
+            .collect();
 
         Sample {
             cpu_percent: clamp_pct(self.sys.global_cpu_usage()),
@@ -65,6 +72,7 @@ impl Sampler {
             temperature_c: hottest(self.components.list().iter().filter_map(|c| c.temperature())),
             user_idle_secs: platform::user_idle_secs(),
             on_battery: platform::on_battery(),
+            processes: std::sync::Arc::new(processes),
         }
     }
 
@@ -108,6 +116,10 @@ mod tests {
         assert!((0.0..=100.0).contains(&x.cpu_ghost_percent));
         assert!(x.ram_total_mb > 0 && x.ram_used_mb <= x.ram_total_mb);
         assert!(x.ram_ghost_mb > 0, "own process memory should be visible");
+        let me = std::env::current_exe().unwrap();
+        let me = crate::configuration::normalize_app_name(&me.file_name().unwrap().to_string_lossy());
+        // Linux truncates comm to 15 chars.
+        assert!(x.processes.iter().any(|p| me.starts_with(p.as_str())), "{me} not in process list");
     }
 
     #[test]

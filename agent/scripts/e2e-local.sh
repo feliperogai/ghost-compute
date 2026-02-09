@@ -54,7 +54,18 @@ echo "$ENROLL" | "$AGENT" --config "$WORK/agent.toml" enroll 2>/dev/null && fail
 
 echo "== run + heartbeat"
 GHOST_LOG=info "$AGENT" --config "$WORK/agent.toml" run 2>"$WORK/agent.err" & AG_PID=$!
-sleep 4
+sleep 3
+W=$(curl -sf "$API/v1/workers/$WID" -H "authorization: Bearer $ADMIN")
+echo "$W" | json '.state' | grep -qx stopped || fail "fresh install must start stopped: $W"
+echo "state=stopped until the owner starts sharing"
+
+echo "== control via local IPC"
+"$AGENT" --config "$WORK/agent.toml" control start
+sleep 2
+S=$("$AGENT" --config "$WORK/agent.toml" status)
+[ "$(echo "$S" | json .control)" = started ] || fail "control not applied: $S"
+[ "$(echo "$S" | json .connection.status)" = connected ] || fail "not connected: $S"
+[ -n "${FIXTURE_OUT:-}" ] && echo "$S" >"$FIXTURE_OUT"
 W=$(curl -sf "$API/v1/workers/$WID" -H "authorization: Bearer $ADMIN")
 echo "$W" | json '.state' | grep -qx waiting || fail "expected state waiting: $W"
 [ "$(echo "$W" | json .deviceId)" = "$DID" ] || fail "device id mismatch"
