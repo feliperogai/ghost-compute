@@ -7,8 +7,7 @@ import type { AppContext } from './context.js';
 import { errorHandler } from './errors.js';
 import { adminRoutes } from './modules/admin/routes.js';
 import { workerRoutes } from './modules/workers/routes.js';
-import { leaseRoutes } from './modules/leases/routes.js';
-import { jobRoutes } from './modules/jobs/routes.js';
+import { assignmentRoutes, jobRoutes } from './jobs/routes.js';
 import { registerWebSocket } from './events/ws.js';
 
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
@@ -59,8 +58,8 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
 
   await app.register(adminRoutes(ctx));
   await app.register(workerRoutes(ctx));
-  await app.register(leaseRoutes(ctx));
   await app.register(jobRoutes(ctx));
+  await app.register(assignmentRoutes(ctx));
   registerWebSocket(app, ctx);
 
   return app;

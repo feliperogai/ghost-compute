@@ -74,32 +74,29 @@ export interface Limits {
   schedule: ScheduleWindow[];
 }
 
-export interface ModuleRef {
-  name: string;
-  version: string;
-}
-
 export interface ActiveWorkload {
-  leaseId: string;
+  assignmentId: string;
   jobId: string;
   jobName: string;
-  module: ModuleRef;
+  /** Workload type, e.g. "wasm-cpu". */
+  type: string;
   progress: number;
   stage: string | null;
   startedAt: string;
 }
 
 export interface RecentTask {
-  leaseId: string;
+  assignmentId: string;
   jobId: string;
   jobName: string;
-  module: ModuleRef;
-  taskIndex: number;
+  type: string;
+  attempt: number;
+  /** Assignment outcome: assigned | running | completed | failed | expired | lost | cancelled | timeout */
   status: string;
   progress: number;
   stage: string | null;
-  offeredAt: string;
-  acceptedAt: string | null;
+  assignedAt: string;
+  startedAt: string | null;
   finishedAt: string | null;
 }
 

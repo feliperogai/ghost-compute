@@ -40,29 +40,23 @@ src/
   db/                  pool, transações, migrator (advisory lock)
   events/bus.ts        Redis pub/sub (multi-instância)
   events/ws.ts         WebSocket /v1/ws
-  queue/task-queue.ts  sorted set Redis (prioridade, idade)
-  scheduler/           líder único: offline, expiração, dispatch, reconciliação
-  modules/{admin,workers,jobs,leases}
+  queue/job-queue.ts   índice de jobs QUEUED no Redis (prioridade, idade)
+  modules/{admin,workers}
+  scheduler/           algoritmo de alocação (independente)
+  jobs/                ciclo de vida, API, adaptador do scheduler
 migrations/            SQL versionado
 ```
 
-**Fonte de verdade:** Postgres. Redis é índice da fila + barramento de eventos. Se o Redis perder dados, o scheduler reconstrói a fila a partir das tasks `pending`.
+**Fonte de verdade:** Postgres. Redis guarda o índice da fila de jobs, o barramento de eventos e o lock de líder do scheduler. Se o Redis perder dados, o scheduler reconstrói o índice a partir do Postgres.
 
-**Concorrência:** toda transição de estado ocorre em transação com ordem fixa de locks `worker → job → task → lease`. Um índice único parcial garante no máximo um lease ativo por task.
-
-### Estados
+**Jobs e scheduler:** ver [ADR 002](../docs/adr-002-job-model-and-scheduler.md).
 
 ```
-task:  pending → leased → running → succeeded
-                  │         ├──→ failed        (attempts > maxRetries)
-                  │         └──→ pending       (falha com retry, preempção, expiração)
-                  └──→ pending (rejeitado)      * qualquer não-terminal → cancelled
-lease: offered → running → succeeded | failed | preempted
-          └→ rejected | expired | cancelled
-job:   queued → running → completed | failed | cancelled
+src/scheduler/   algoritmo (puro, substituível): elegibilidade, estratégia, retry, engine
+src/jobs/        persistência e API: lifecycle (transições), scheduler-store (ports), runner (líder), rotas
 ```
 
-Falha e expiração consomem tentativa. Preempção, rejeição e revogação do worker não consomem.
+Estados: `QUEUED → ASSIGNED → RUNNING → COMPLETED | FAILED | TIMEOUT`, e `CANCELLED` a partir de qualquer estado não terminal. Cada tentativa é uma assignment com score e motivo de término.
 
 ## Autenticação
 
@@ -84,19 +78,20 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 | POST | `/v1/workers/auth` | secret do worker | 2. autenticar Worker |
 | POST | `/v1/workers/:id/revoke` | admin | 3. revogar Worker |
 | GET | `/v1/workers` | viewer | 4. listar (`status`, `state`, `limit`, `offset`) |
-| GET | `/v1/workers/:id` | viewer | 5. status + leases ativos |
-| POST | `/v1/jobs` | operator | 6. criar Job (1 task por item de `inputs`) |
-| GET | `/v1/jobs/:id` | viewer | 7. consultar Job (+ contagem e progresso) |
-| GET | `/v1/jobs/:id/tasks` | viewer | tasks, inputs e outputs |
+| GET | `/v1/workers/:id` | viewer | 5. status + atribuições ativas |
+| GET | `/v1/workload-types` | viewer | catálogo de tipos de workload |
+| POST | `/v1/jobs` | operator | criar Job (`type, requirements, resources, priority, timeout, maxAttempts, input`) |
+| GET | `/v1/jobs/:id` | viewer | Job completo + histórico de tentativas (score, motivo) |
 | GET | `/v1/jobs/:id/events` | viewer | trilha de eventos |
-| POST | `/v1/jobs/:id/cancel` | operator | 8. cancelar Job |
-| GET | `/v1/jobs` | viewer | 9. histórico (cursor, `status`, `module`, `since`, `until`) |
-| POST | `/v1/worker/heartbeat` | worker | 10. heartbeat → `cancelLeaseIds`, `offers` |
-| — | scheduler | — | 11. detecta offline, libera leases |
-| POST | `/v1/worker/leases/claim` | worker | 12. pull de tarefas (push via WS também) |
-| POST | `/v1/worker/leases/:id/accept` · `/reject` | worker | aceitar/recusar oferta |
-| POST | `/v1/worker/leases/:id/progress` | worker | 13. progresso (0–1, `stage`) |
-| POST | `/v1/worker/leases/:id/result` | worker | 14. `succeeded` (output + sha256) · `failed` · `preempted` |
+| POST | `/v1/jobs/:id/cancel` | dono ou admin | cancelar |
+| GET | `/v1/jobs` | viewer | histórico (`status`, `type`, `owner=me\|uuid`, `since`, `until`, cursor) |
+| POST | `/v1/worker/heartbeat` | worker | estado, uso, **capacidade**, **tipos suportados** → `assignments`, `cancelAssignmentIds` |
+| — | scheduler | — | detecta offline, expira, recupera, aplica timeout, aloca |
+| GET | `/v1/worker/assignments` | worker | atribuições pendentes (também via WS `job.assigned`) |
+| POST | `/v1/worker/assignments/:id/accept` · `/reject` | worker | aceitar/recusar |
+| POST | `/v1/worker/assignments/:id/progress` | worker | progresso (0–1, `stage`) |
+| POST | `/v1/worker/assignments/:id/result` | worker | `completed` (output + sha256) · `failed` (`error`, `retryable`) |
+| GET | `/v1/worker/me/stats` | worker | contagens, créditos internos, histórico |
 | GET | `/healthz` · `/readyz` | — | liveness / readiness |
 
 ## WebSocket `GET /v1/ws`
@@ -104,8 +99,8 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 Autenticação por header `Authorization` ou primeira mensagem `{"type":"auth","token":"…"}` em até 5 s. Tokens nunca vão na URL.
 
 - **Usuário** recebe `{"type":"event","event":{type,ts,data}}`. Pode filtrar: `{"type":"subscribe","types":["job."],"jobId":"…"}`.
-  Eventos: `worker.registered|online|offline|state|heartbeat|revoked`, `job.created|updated|cancelled`, `task.updated|progress`.
-- **Worker** recebe `task.offer`, `lease.cancel`, `worker.revoked` (a conexão fecha com código 4003). Ofertas pendentes são reenviadas ao conectar.
+  Eventos: `worker.registered|online|offline|state|heartbeat|revoked`, `job.created|updated|progress`.
+- **Worker** recebe `job.assigned`, `assignment.cancel`, `worker.revoked` (a conexão fecha com código 4003). Ofertas pendentes são reenviadas ao conectar.
 
 Códigos de fechamento: 4001 não autorizado · 4003 revogado · 4008 timeout de auth · 1008 rate limit.
 

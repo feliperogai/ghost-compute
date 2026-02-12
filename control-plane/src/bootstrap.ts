@@ -2,7 +2,7 @@ import { loadConfig, type Config } from './config.js';
 import { createPool } from './db/pool.js';
 import { createRedis } from './redis/client.js';
 import { EventBus } from './events/bus.js';
-import { TaskQueue } from './queue/task-queue.js';
+import { JobQueue } from './queue/job-queue.js';
 import type { AppContext } from './context.js';
 
 export interface Runtime extends AppContext {
@@ -15,7 +15,7 @@ export async function createRuntime(config: Config = loadConfig()): Promise<Runt
   const sub = createRedis(config.REDIS_URL);
   const bus = new EventBus(redis, sub);
   await bus.start();
-  const queue = new TaskQueue(redis);
+  const queue = new JobQueue(redis);
   return {
     config,
     db,

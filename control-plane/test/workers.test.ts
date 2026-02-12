@@ -120,7 +120,14 @@ describe('listing & status', () => {
     expect(avail.json().items.map((w: { name: string }) => w.name)).toEqual(['a']);
 
     const one = await h.app.inject({ url: `/v1/workers/${a.id}`, headers: auth(viewer) });
-    expect(one.json()).toMatchObject({ id: a.id, state: 'available', online: true, leases: [] });
+    expect(one.json()).toMatchObject({
+      id: a.id,
+      state: 'available',
+      online: true,
+      assignments: [],
+      workloadTypes: ['wasm-cpu'],
+      capacity: { cpuCores: 4 },
+    });
     expect(one.json().lastUsage.cpuPercent).toBe(10);
 
     const missing = await h.app.inject({
@@ -136,15 +143,16 @@ describe('heartbeat & offline detection', () => {
   it('updates state and reports unknown leases for cancellation', async () => {
     const w = await registerWorker(h);
     const ghost = '6f1c1c2e-3b7a-4f7e-9a53-2d6a9a0c1b11';
-    const res = await heartbeat(h, w, { state: 'paused', activeLeaseIds: [ghost] });
+    const res = await heartbeat(h, w, { state: 'paused', activeAssignmentIds: [ghost] });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ cancelLeaseIds: [ghost], offers: [], heartbeatIntervalSeconds: 5 });
+    expect(res.json()).toMatchObject({ cancelAssignmentIds: [ghost], assignments: [], heartbeatIntervalSeconds: 5 });
   });
 
-  it('rejects malformed usage', async () => {
+  it('rejects malformed usage, capacity and workload types', async () => {
     const w = await registerWorker(h);
-    const res = await heartbeat(h, w, { usage: { cpuPercent: 400, ramUsedMb: 1 } });
-    expect(res.statusCode).toBe(400);
+    expect((await heartbeat(h, w, { usage: { cpuPercent: 400, ramUsedMb: 1 } })).statusCode).toBe(400);
+    expect((await heartbeat(h, w, { capacity: { cpuCores: 1 } })).statusCode).toBe(400);
+    expect((await heartbeat(h, w, { workloadTypes: ['Shell; rm -rf'] })).statusCode).toBe(400);
   });
 
   it('marks silent workers offline and emits an event', async () => {

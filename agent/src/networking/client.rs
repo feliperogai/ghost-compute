@@ -169,12 +169,11 @@ impl ApiClient {
         self.call(Method::POST, "/v1/worker/heartbeat", Some(req)).await
     }
 
-    /// Declines an offer (used while this build cannot execute workloads).
-    pub async fn reject_lease(&self, lease_id: Uuid, reason: &str) -> Result<(), ApiError> {
+    /// Declines an assignment (e.g. unsupported type, or this build cannot execute workloads).
+    pub async fn reject_assignment(&self, assignment_id: Uuid, reason: &str) -> Result<(), ApiError> {
         let body = serde_json::json!({ "reason": reason });
-        self.call::<_, serde_json::Value>(Method::POST, &format!("/v1/worker/leases/{lease_id}/reject"), Some(&body))
-            .await
-            .map(|_| ())
+        let path = format!("/v1/worker/assignments/{assignment_id}/reject");
+        self.call::<_, serde_json::Value>(Method::POST, &path, Some(&body)).await.map(|_| ())
     }
 
     pub async fn stats(&self) -> Result<crate::runtime::WorkerStats, ApiError> {

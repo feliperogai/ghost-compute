@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { WebSocket } from 'ws';
 import { auth, createJob, heartbeat, makeUser, registerWorker, reset, setup, type Harness } from './helpers.js';
 import { createUserWithToken } from '../src/modules/admin/service.js';
-import { LeaseService } from '../src/modules/leases/service.js';
+import { createEngine } from '../src/jobs/runner.js';
 import { WS_CLOSE } from '../src/events/ws.js';
 
 let h: Harness;
@@ -79,17 +79,18 @@ describe('websocket', () => {
     expect(await code).toBe(WS_CLOSE.UNAUTHORIZED);
   });
 
-  it('delivers offers and cancellations to workers, and closes on revoke', async () => {
+  it('delivers assignments and cancellations to workers, and closes on revoke', async () => {
     const w = await registerWorker(h);
     await heartbeat(h, w);
-    await createJob(h, op, { inputs: [{}] });
-    // Offer created while disconnected is replayed on connect.
-    const [offer] = await new LeaseService(h.rt).offerNext(w.id);
+    const job = await createJob(h, op);
+    // Assigned while the worker is disconnected: replayed on connect.
+    await createEngine(h.rt).tick();
 
     const ws = await h.app.injectWS('/v1/ws', { headers: auth(w.token) });
     const box = inbox(ws);
     await box.next((m) => m.type === 'ready');
-    expect((await box.next((m) => m.type === 'task.offer')).offer.leaseId).toBe(offer!.leaseId);
+    const assigned = await box.next((m) => m.type === 'job.assigned');
+    expect(assigned.assignment).toMatchObject({ jobId: job.id, type: 'wasm-cpu' });
 
     const code = closed(ws);
     await h.app.inject({
@@ -98,7 +99,9 @@ describe('websocket', () => {
       headers: auth(h.adminToken),
       payload: { reason: 'lost laptop' },
     });
-    expect(await box.next((m) => m.type === 'lease.cancel')).toMatchObject({ leaseId: offer!.leaseId });
+    expect(await box.next((m) => m.type === 'assignment.cancel')).toMatchObject({
+      assignmentId: assigned.assignment.assignmentId,
+    });
     expect(await box.next((m) => m.type === 'worker.revoked')).toMatchObject({ reason: 'lost laptop' });
     expect(await code).toBe(WS_CLOSE.REVOKED);
   });

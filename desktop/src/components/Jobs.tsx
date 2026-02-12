@@ -15,7 +15,7 @@ export function Jobs({ status }: { status: Status }) {
             <thead>
               <tr>
                 <th>Trabalho</th>
-                <th>Módulo</th>
+                <th>Tipo</th>
                 <th>Etapa</th>
                 <th>Progresso</th>
                 <th>Início</th>
@@ -23,9 +23,9 @@ export function Jobs({ status }: { status: Status }) {
             </thead>
             <tbody>
               {status.workloads.map((w) => (
-                <tr key={w.leaseId}>
+                <tr key={w.assignmentId}>
                   <td>{w.jobName}</td>
-                  <td>{w.module.name} {w.module.version}</td>
+                  <td>{w.type}</td>
                   <td>{w.stage ?? '—'}</td>
                   <td className="num">{pct(w.progress * 100)}</td>
                   <td>{relativeTime(w.startedAt, now)}</td>
@@ -44,8 +44,8 @@ export function Jobs({ status }: { status: Status }) {
             <thead>
               <tr>
                 <th>Trabalho</th>
-                <th>Módulo</th>
-                <th>Tarefa</th>
+                <th>Tipo</th>
+                <th>Tentativa</th>
                 <th>Resultado</th>
                 <th>Duração</th>
                 <th>Quando</th>
@@ -54,15 +54,15 @@ export function Jobs({ status }: { status: Status }) {
             <tbody>
               {recent.map((t) => {
                 const d =
-                  t.acceptedAt && t.finishedAt ? (Date.parse(t.finishedAt) - Date.parse(t.acceptedAt)) / 1000 : null;
+                  t.startedAt && t.finishedAt ? (Date.parse(t.finishedAt) - Date.parse(t.startedAt)) / 1000 : null;
                 return (
-                  <tr key={t.leaseId}>
+                  <tr key={t.assignmentId}>
                     <td>{t.jobName}</td>
-                    <td>{t.module.name} {t.module.version}</td>
-                    <td className="num">#{t.taskIndex}</td>
+                    <td>{t.type}</td>
+                    <td className="num">{t.attempt}ª</td>
                     <td><span className={`pill ${t.status}`}>{taskStatusText(t.status)}</span></td>
                     <td className="num">{d == null ? '—' : duration(d)}</td>
-                    <td>{relativeTime(t.finishedAt ?? t.offeredAt, now)}</td>
+                    <td>{relativeTime(t.finishedAt ?? t.assignedAt, now)}</td>
                   </tr>
                 );
               })}

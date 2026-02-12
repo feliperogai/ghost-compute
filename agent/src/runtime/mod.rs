@@ -68,33 +68,30 @@ pub struct TaskCounts {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentTask {
-    pub lease_id: Uuid,
+    pub assignment_id: Uuid,
     pub job_id: Uuid,
+    /// Job name, or its workload type when unnamed.
     pub job_name: String,
-    pub module: ModuleRef,
-    pub task_index: u32,
+    #[serde(rename = "type")]
+    pub workload_type: String,
+    pub attempt: u32,
     pub status: String,
     pub progress: f32,
     pub stage: Option<String>,
-    pub offered_at: DateTime<Utc>,
-    pub accepted_at: Option<DateTime<Utc>>,
+    pub assigned_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ModuleRef {
-    pub name: String,
-    pub version: String,
 }
 
 /// A workload executing on this machine right now (filled by the executor).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveWorkload {
-    pub lease_id: Uuid,
+    pub assignment_id: Uuid,
     pub job_id: Uuid,
     pub job_name: String,
-    pub module: ModuleRef,
+    #[serde(rename = "type")]
+    pub workload_type: String,
     pub progress: f32,
     pub stage: Option<String>,
     pub started_at: DateTime<Utc>,
