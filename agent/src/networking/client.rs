@@ -180,6 +180,40 @@ impl ApiClient {
         self.call::<(), _>(Method::GET, "/v1/worker/me/stats?recent=20", None).await
     }
 
+    pub async fn accept_assignment(&self, id: Uuid) -> Result<(), ApiError> {
+        self.call::<(), serde_json::Value>(Method::POST, &format!("/v1/worker/assignments/{id}/accept"), None)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn assignment_progress(&self, id: Uuid, progress: f32, stage: Option<&str>) -> Result<(), ApiError> {
+        let mut body = serde_json::json!({ "progress": progress.clamp(0.0, 1.0) });
+        if let Some(s) = stage {
+            body["stage"] = s.into();
+        }
+        self.call::<_, serde_json::Value>(Method::POST, &format!("/v1/worker/assignments/{id}/progress"), Some(&body))
+            .await
+            .map(|_| ())
+    }
+
+    /// The hash covers the exact JSON serialization of `output`.
+    pub async fn complete_assignment(&self, id: Uuid, output: &serde_json::Value) -> Result<(), ApiError> {
+        use sha2::{Digest, Sha256};
+        let sha = hex::encode(Sha256::digest(serde_json::to_string(output).unwrap_or_default()));
+        let body = serde_json::json!({ "status": "completed", "output": output, "outputSha256": sha });
+        self.call::<_, serde_json::Value>(Method::POST, &format!("/v1/worker/assignments/{id}/result"), Some(&body))
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn fail_assignment(&self, id: Uuid, error: &str, retryable: bool) -> Result<(), ApiError> {
+        let error: String = error.chars().take(2000).collect();
+        let body = serde_json::json!({ "status": "failed", "error": error, "retryable": retryable });
+        self.call::<_, serde_json::Value>(Method::POST, &format!("/v1/worker/assignments/{id}/result"), Some(&body))
+            .await
+            .map(|_| ())
+    }
+
     pub async fn me(&self) -> Result<serde_json::Value, ApiError> {
         self.call::<(), _>(Method::GET, "/v1/worker/me", None).await
     }

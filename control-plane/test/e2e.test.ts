@@ -83,7 +83,7 @@ describe('end to end', () => {
       state: 'available',
       usage: { cpuPercent: 5, ramUsedMb: 3000, temperatureC: 48 },
       capacity: { cpuCores: 4, ramMb: 4096, gpuPercent: 0, vramMb: 0, diskMb: 10_000, maxTemperatureC: 85 },
-      workloadTypes: ['wasm-cpu'],
+      workloadTypes: ['benchmark'],
     };
     await api('POST', '/v1/worker/heartbeat', accessToken, hb);
     await dashboard.until((m) => m.event?.type === 'worker.online');
@@ -94,7 +94,7 @@ describe('end to end', () => {
     // Jobs: received, analysed, matched, assigned and pushed by the running scheduler.
     const jobs = [];
     for (const x of [2, 3, 4]) {
-      jobs.push(await api('POST', '/v1/jobs', operator, { type: 'wasm-cpu', name: `square ${x}`, input: { x }, timeout: 60 }));
+      jobs.push(await api('POST', '/v1/jobs', operator, { type: 'benchmark', name: `primes ${x}`, input: { kind: 'primes', size: x * 10, iterations: 1 }, timeout: 60 }));
     }
 
     for (let done = 0; done < 3; ) {
@@ -102,7 +102,8 @@ describe('end to end', () => {
       const { assignmentId, input } = msg.assignment;
       await api('POST', `/v1/worker/assignments/${assignmentId}/accept`, accessToken);
       await api('POST', `/v1/worker/assignments/${assignmentId}/progress`, accessToken, { progress: 0.5, stage: 'compute' });
-      const output = { y: input.x * input.x };
+      // A mock worker: answers with the size it was asked for.
+      const output = { size: input.size };
       const outputSha256 = createHash('sha256').update(JSON.stringify(output)).digest('hex');
       await api('POST', `/v1/worker/assignments/${assignmentId}/result`, accessToken, { status: 'completed', output, outputSha256 });
       done++;
@@ -112,7 +113,7 @@ describe('end to end', () => {
     for (const j of jobs) {
       const got = await api('GET', `/v1/jobs/${j.id}`, operator);
       expect(got.status).toBe('COMPLETED');
-      expect(got.output.y).toBe(got.input.x ** 2);
+      expect(got.output.size).toBe(got.input.size);
     }
 
     const history = await api('GET', '/v1/jobs?status=COMPLETED', operator);

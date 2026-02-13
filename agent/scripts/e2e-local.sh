@@ -9,18 +9,20 @@ DB="${E2E_DB:-postgres://ghost:ghost@localhost:5432/ghost_e2e}"
 WORK="$(mktemp -d)"
 AGENT="$ROOT/agent/target/debug/ghost-agent"
 API="http://127.0.0.1:$PORT"
-trap 'kill ${CP_PID:-} ${AG_PID:-} 2>/dev/null || true; rm -rf "$WORK"' EXIT
+trap 'kill -- -${CP_PID:-0} 2>/dev/null; kill ${AG_PID:-} 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 json() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);console.log(eval('v'+process.argv[1]))})" "$1"; }
 
 export DATABASE_URL="$DB" REDIS_URL="redis://localhost:6379/4" PORT HOST=127.0.0.1 LOG_LEVEL=warn \
   WORKER_TOKEN_SECRET="e2e-secret-e2e-secret-e2e-secret-1234" HEARTBEAT_INTERVAL_SECONDS=1 WORKER_OFFLINE_AFTER_SECONDS=10
+curl -s -o /dev/null "http://127.0.0.1:$PORT/healthz" && fail "port $PORT already in use (stale server?)"
 redis-cli -n 4 flushdb >/dev/null
 
 cd "$ROOT/control-plane"
 ADMIN=$(npx tsx src/cli/create-admin.ts "e2e-$RANDOM@ghost.test" | grep -o 'ghu_[A-Za-z0-9_-]*')
-npx tsx src/server.ts >"$WORK/cp.log" 2>&1 & CP_PID=$!
+# Own process group: killing it also kills the node child that npx/tsx spawn.
+setsid npx tsx src/server.ts >"$WORK/cp.log" 2>&1 & CP_PID=$!
 for _ in $(seq 50); do curl -sf "$API/readyz" >/dev/null && break; sleep 0.2; done
 curl -sf "$API/readyz" >/dev/null || fail "control plane did not start"
 
@@ -67,11 +69,32 @@ S=$("$AGENT" --config "$WORK/agent.toml" status)
 [ "$(echo "$S" | json .connection.status)" = connected ] || fail "not connected: $S"
 [ -n "${FIXTURE_OUT:-}" ] && echo "$S" >"$FIXTURE_OUT"
 W=$(curl -sf "$API/v1/workers/$WID" -H "authorization: Bearer $ADMIN")
-echo "$W" | json '.state' | grep -qx waiting || fail "expected state waiting: $W"
+echo "$W" | json '.state' | grep -qx available || fail "expected state available: $W"
+echo "$W" | json '.workloadTypes' | grep -q benchmark || fail "benchmark not declared: $W"
 [ "$(echo "$W" | json .deviceId)" = "$DID" ] || fail "device id mismatch"
 echo "$W" | json '.lastUsage.cpuPercent' | grep -qE '^[0-9.]+$' || fail "no usage: $W"
 echo "$W" | json '.hardware.cpu.threads' | grep -qE '^[1-9]' || fail "no hardware: $W"
-echo "state=waiting (execution unavailable) usage=$(echo "$W" | json '.lastUsage')"
+echo "state=available usage=$(echo "$W" | json '.lastUsage')"
+
+echo "== benchmark job, executed in the sandbox"
+OP="$ADMIN"
+JOB=$(curl -sf -X POST "$API/v1/jobs" -H "authorization: Bearer $OP" -H 'content-type: application/json' \
+  -d '{"type":"benchmark","name":"primes to 1e6","input":{"kind":"primes","size":1000000,"iterations":2},"timeout":60}' | json .id)
+for _ in $(seq 60); do
+  J=$(curl -sf "$API/v1/jobs/$JOB" -H "authorization: Bearer $OP")
+  ST=$(echo "$J" | json .status)
+  [ "$ST" = COMPLETED ] || [ "$ST" = FAILED ] && break
+  sleep 0.5
+done
+[ "$ST" = COMPLETED ] || fail "benchmark job ended $ST: $J"
+[ "$(echo "$J" | json .output.checksum)" = "00000000000132a2" ] || fail "wrong checksum: $J"  # 78498 = 0x132a2 primes ≤ 1e6
+echo "benchmark: $(echo "$J" | json '.output.opsPerSecond') numbers/s, module $(echo "$J" | json '.output.runtime.moduleSha256' | cut -c1-12)…"
+
+echo "== hostile job is refused by the control plane"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/v1/jobs" -H "authorization: Bearer $OP" -H 'content-type: application/json' \
+  -d '{"type":"shell","input":{"cmd":"whoami"}}')
+[ "$CODE" = 400 ] || fail "shell job not refused ($CODE)"
+[ -z "$(ls -A "$WORK/data/sandbox" 2>/dev/null)" ] || fail "sandbox directory not cleaned"
 
 echo "== revoke"
 curl -sf -X POST "$API/v1/workers/$WID/revoke" -H "authorization: Bearer $ADMIN" \

@@ -3,9 +3,19 @@
 Worker agent for Windows, written in Rust. It detects hardware, monitors resource use,
 applies the owner's limits and talks to the control plane over HTTPS.
 
-**Done:** hardware detection, monitoring, heartbeat, secure communication, and local
-IPC for the desktop app (status, start/pause/stop, settings, presence).
-**Next:** execution, Windows service mode, self-update. Until execution exists the agent reports `waiting` and
+**Done:** hardware detection, monitoring, heartbeat, secure communication, local IPC
+for the desktop app, and **isolated execution** of registered workloads (see
+[ADR 003](../docs/adr-003-isolated-execution.md)).
+**Next:** AppContainer for the sandbox process, Windows service mode, self-update.
+
+## Execution
+
+Only built-in workload types run (today: `benchmark`). A job carries a type and strictly
+validated parameters, never code. Each job runs in a fresh `ghost-sandbox` process
+(empty environment, private temp dir, Job Object / rlimits) hosting Wasmtime with no
+WASI; the module is embedded in the binary and pinned by SHA-256. `ghost-sandbox` must
+sit next to `ghost-agent`; without it execution is disabled and no types are declared.
+Rebuild modules with `../workloads/build.sh` (prints the new hash to pin). Until execution exists the agent reports `waiting` and
 declines any offer, so no task is ever held by it.
 
 ## Use
@@ -39,7 +49,8 @@ Exit codes of `run`: `0` shutdown · `2` credentials rejected (re-enroll) · `3`
 | `security` | TLS policy + CA pinning, device identity, DPAPI-protected credentials, `SecretString` |
 | `configuration` | `agent.toml`, strict validation, conservative defaults |
 | `logging` | Console + daily-rotated JSON files (7 kept) |
-| `execution`, `updater` | Placeholders for the next phases |
+| `execution` | Workload registry, Wasmtime runner, sandbox process supervisor, executor |
+| `updater` | Placeholder for the next phase |
 
 ## Security
 

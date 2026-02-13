@@ -52,14 +52,14 @@ describe('job API', () => {
       timeout: 120,
     });
     expect(j).toMatchObject({
-      type: 'wasm-cpu',
+      type: 'benchmark',
       status: 'QUEUED',
       priority: 80,
       timeout: 120,
       maxAttempts: 3,
       requirements: { os: 'windows', cpuFeatures: ['avx2'] },
       resources: { cpuCores: 2, ramMb: 2048, gpu: false, vramMb: 0, diskMb: 0 },
-      input: { samples: 1000 },
+      input: { kind: 'primes', size: 1000, iterations: 1 },
       output: null,
       error: null,
       startedAt: null,
@@ -72,14 +72,28 @@ describe('job API', () => {
   });
 
   it.each([
-    [{ type: 'shell' }],
-    [{ type: 'wasm-gpu' }],
+    // Unregistered types: nothing but registered, sandboxed workloads exist.
+    [{ type: 'shell', input: { cmd: 'whoami' } }],
+    [{ type: 'powershell', input: 'Get-ChildItem C:\\' }],
+    [{ type: 'script', input: { lang: 'python', code: 'import os; os.system("id")' } }],
+    [{ type: 'exe', input: { url: 'http://evil/payload.exe' } }],
+    [{ type: 'wasm', input: { module: 'AGFzbQEAAAA=' } }],
+    [{ type: 'gpu-test' }],
+    // Registered type, smuggled or out-of-range parameters.
+    [{ input: { kind: 'hash', iterations: 1, command: 'calc.exe' } }],
+    [{ input: { kind: 'hash', iterations: 1, path: 'C:\\Users' } }],
+    [{ input: { kind: 'hash', iterations: 1, module: 'AGFzbQEAAAA=' } }],
+    [{ input: { kind: 'exec', iterations: 1 } }],
+    [{ input: { kind: 'hash', iterations: 1e12 } }],
+    [{ input: { kind: 'matmul', size: 100000, iterations: 1 } }],
+    [{ input: 'benchmark --shell' }],
+    // Top-level smuggling and resource abuse.
+    [{ command: 'rm -rf /' }],
+    [{ executable: 'TVqQAAMAAAAEAAAA' }],
+    [{ resources: { gpu: true } }],
     [{ resources: { cpuCores: 0 } }],
-    [{ resources: { vramMb: 100 } }],
     [{ requirements: { gpuVendor: 'Voodoo' } }],
     [{ timeout: 5 }],
-    [{ input: 'x'.repeat(300_000) }],
-    [{ command: 'rm -rf /' }],
   ])('rejects invalid job %j', async (bad) => {
     await expect(createJob(h, op, bad)).rejects.toThrow(/VALIDATION_ERROR/);
   });
@@ -97,7 +111,7 @@ describe('job API', () => {
     const ok = await h.app.inject({ method: 'POST', url: `/v1/jobs/${mine.id}/cancel`, headers: auth(h.adminToken), payload: { reason: 'admin' } });
     expect(ok.json()).toMatchObject({ status: 'CANCELLED', error: { code: 'CANCELLED', message: 'admin' } });
     expect((await h.app.inject({ url: '/v1/jobs?status=CANCELLED', headers: auth(op) })).json().items).toHaveLength(1);
-    expect((await h.app.inject({ url: '/v1/workload-types', headers: auth(op) })).json().items.map((t: { id: string }) => t.id)).toContain('wasm-cpu');
+    expect((await h.app.inject({ url: '/v1/workload-types', headers: auth(op) })).json().items.map((t: { id: string }) => t.id)).toContain('benchmark');
   });
 });
 
@@ -113,7 +127,7 @@ describe('scheduling', () => {
     expect(assigned.assignments[0].scoreDetail.components).toHaveProperty('thermal');
 
     const [a] = await assignments(w);
-    expect(a).toMatchObject({ jobId: j.id, type: 'wasm-cpu', input: { samples: 1000 }, timeoutSeconds: 3600 });
+    expect(a).toMatchObject({ jobId: j.id, name: 'primes', type: 'benchmark', input: { kind: 'primes', size: 1000 }, timeoutSeconds: 3600 });
     await post(w, `/v1/worker/assignments/${a!.assignmentId}/accept`);
     expect((await getJob(j.id)).status).toBe('RUNNING');
     await post(w, `/v1/worker/assignments/${a!.assignmentId}/progress`, { progress: 0.5, stage: 'sampling' });
@@ -131,20 +145,15 @@ describe('scheduling', () => {
   });
 
   it('matches requirements and workload type; explains why a job waits', async () => {
-    await online('cpu-only');
-    const gpuJob = await createJob(h, op, { type: 'wasm-gpu', resources: { gpu: true, vramMb: 4096 } });
+    await online('no-types', { workloadTypes: [] });
+    const j = await createJob(h, op);
     const bigJob = await createJob(h, op, { resources: { ramMb: 64_000 } });
     await engine.tick();
-    expect((await getJob(gpuJob.id)).pendingReason).toBe('no eligible worker (1× TYPE_UNSUPPORTED)');
-    expect((await getJob(bigJob.id)).pendingReason).toBe('no eligible worker (1× INSUFFICIENT_RAM)');
-
-    const g = await registerWorker(h, {
-      name: 'gamer',
-      hardware: { cpu: { model: 'x', cores: 8, threads: 16 }, ramMb: 32768, gpus: [{ name: 'RTX', vendor: 'NVIDIA', vramMb: 12288 }], os: { name: 'Windows', version: '11' } },
-    });
-    await heartbeat(h, g, { workloadTypes: ['wasm-cpu', 'wasm-gpu'], capacity: { ...CAPACITY, gpuPercent: 50, vramMb: 12288 } });
+    expect((await getJob(j.id)).pendingReason).toBe('no eligible worker (1× TYPE_UNSUPPORTED)');
+    const w = await online('runner');
     await engine.tick();
-    expect(await getJob(gpuJob.id)).toMatchObject({ status: 'ASSIGNED', workerId: g.id, pendingReason: null });
+    expect(await getJob(j.id)).toMatchObject({ status: 'ASSIGNED', workerId: w.id, pendingReason: null });
+    expect((await getJob(bigJob.id)).pendingReason).toMatch(/INSUFFICIENT_RAM/);
   });
 
   it('selects the better worker: cooler, less loaded', async () => {

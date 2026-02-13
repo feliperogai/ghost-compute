@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { WORKLOAD_TYPES } from '../scheduler/catalog.js';
+import { WORKLOAD_TYPES, workloadType } from '../scheduler/catalog.js';
+import { INPUT_SCHEMAS } from './workloads.js';
 import { JOB_STATUSES } from '../scheduler/types.js';
 
 export const MAX_INPUT_BYTES = 256 * 1024;
@@ -45,9 +46,16 @@ export const createJobSchema = z
     input: json(MAX_INPUT_BYTES),
   })
   .strict()
-  .refine((j) => j.type !== 'wasm-gpu' || j.resources.gpu, {
-    message: "type 'wasm-gpu' requires resources.gpu: true",
-    path: ['resources', 'gpu'],
+  .superRefine((j, ctx) => {
+    const t = workloadType(j.type)!;
+    if (t.requiresGpu && !j.resources.gpu)
+      ctx.addIssue({ code: 'custom', path: ['resources', 'gpu'], message: `type '${j.type}' requires a GPU` });
+    if (!t.supportsGpu && j.resources.gpu)
+      ctx.addIssue({ code: 'custom', path: ['resources', 'gpu'], message: `type '${j.type}' cannot use a GPU` });
+    // Parameters are validated per type: strict schemas, no free-form fields.
+    const r = INPUT_SCHEMAS[j.type]!.safeParse(j.input);
+    if (!r.success)
+      for (const i of r.error.issues) ctx.addIssue({ code: 'custom', path: ['input', ...i.path.map(String)], message: i.message });
   });
 
 export type CreateJobInput = z.infer<typeof createJobSchema>;
