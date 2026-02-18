@@ -160,7 +160,7 @@ async fn runs_a_benchmark_and_reports_a_verifiable_result() {
         &s.received_requests().await.unwrap().iter().find(|r| r.url.path() == "/v1/worker/heartbeat").unwrap().body,
     )
     .unwrap();
-    assert_eq!(hb["workloadTypes"], json!(["benchmark"]));
+    assert_eq!(hb["workloadTypes"], json!(["benchmark", "image-inference"]));
     assert_eq!(rig.shared.status().workloads.len(), 0);
     rig.stop.send(true).unwrap();
     rig.task.await.unwrap();
@@ -260,6 +260,116 @@ async fn server_cancellation_stops_the_workload_silently() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(rig.shared.status().workloads.is_empty(), "still running after cancel");
     assert!(calls(&s, id, "result").await.is_empty(), "no result after server cancel");
+    rig.stop.send(true).unwrap();
+    rig.task.await.unwrap();
+}
+
+// ---- image-inference ----------------------------------------------------------------
+
+fn digit_fixtures(n: usize) -> Vec<(Vec<u8>, u8)> {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../workloads/image-inference/testdata");
+    let mut v: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "png"))
+        .collect();
+    v.sort();
+    v.into_iter()
+        .take(n)
+        .map(|p| {
+            let label = p.to_string_lossy().split("label").nth(1).unwrap().as_bytes()[0] - b'0';
+            (std::fs::read(&p).unwrap(), label)
+        })
+        .collect()
+}
+
+fn inference_assignment(id: Uuid, images: &[(Vec<u8>, u8)], checkpoint: Option<Value>) -> Value {
+    let refs: Vec<Value> = images
+        .iter()
+        .enumerate()
+        .map(|(i, (b, _))| json!({ "index": i, "sha256": hex::encode(Sha256::digest(b)), "size": b.len() }))
+        .collect();
+    let mut a = assignment(id, "image-inference", json!({ "images": refs, "accelerator": "cpu", "topK": 2 }));
+    a["resources"]["ramMb"] = 256.into();
+    if let Some(c) = checkpoint {
+        a["checkpoint"] = c;
+    }
+    a
+}
+
+async fn serve_image(s: &MockServer, id: Uuid, index: usize, bytes: Vec<u8>) {
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/worker/assignments/{id}/images/{index}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+        .mount(s)
+        .await;
+}
+
+#[tokio::test]
+async fn image_batch_resumes_from_checkpoint_and_returns_all_results() {
+    let s = MockServer::start().await;
+    mount_auth(&s).await;
+    let id = Uuid::new_v4();
+    let fx = digit_fixtures(6);
+    // A previous attempt already classified images 0 and 1.
+    let done = |i: usize, label: u8| json!({ "index": i, "label": label, "confidenceBp": 9000, "topK": [{ "label": label, "confidenceBp": 9000 }] });
+    let checkpoint = json!({ "items": [done(0, fx[0].1), done(1, fx[1].1)] });
+    for (i, (b, _)) in fx.iter().enumerate() {
+        serve_image(&s, id, i, b.clone()).await;
+    }
+    mount_heartbeat(&s, json!([inference_assignment(id, &fx, Some(checkpoint))])).await;
+    let rig = start(&s).await;
+
+    let result = wait_for(&s, id, "result").await;
+    let body: Value = serde_json::from_slice(&result[0].body).unwrap();
+    assert_eq!(body["status"], "completed", "{body}");
+    let out = &body["output"];
+    assert_eq!((out["count"].as_u64(), out["resumed"].as_u64(), out["failed"].as_u64()), (Some(6), Some(2), Some(0)));
+    assert_eq!(out["accelerator"], "cpu");
+    for (i, (_, label)) in fx.iter().enumerate() {
+        assert_eq!(out["items"][i]["index"], i);
+        assert_eq!(out["items"][i]["label"], *label);
+    }
+    let sha = hex::encode(Sha256::digest(serde_json::to_string(out).unwrap()));
+    assert_eq!(body["outputSha256"], sha);
+    // Only the missing images were downloaded.
+    let downloads: Vec<String> = s
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.url.path().to_string())
+        .filter(|p| p.contains("/images/"))
+        .collect();
+    assert_eq!(downloads.len(), 4, "{downloads:?}");
+    assert!(!downloads.iter().any(|p| p.ends_with("/images/0") || p.ends_with("/images/1")));
+    rig.stop.send(true).unwrap();
+    rig.task.await.unwrap();
+}
+
+#[tokio::test]
+async fn tampered_image_fails_the_attempt_but_keeps_a_checkpoint() {
+    let s = MockServer::start().await;
+    mount_auth(&s).await;
+    let id = Uuid::new_v4();
+    let fx = digit_fixtures(3);
+    serve_image(&s, id, 0, fx[0].0.clone()).await;
+    serve_image(&s, id, 1, fx[1].0.clone()).await;
+    serve_image(&s, id, 2, b"MZ this is not the image you hashed".to_vec()).await;
+    mount_heartbeat(&s, json!([inference_assignment(id, &fx, None)])).await;
+    let rig = start(&s).await;
+
+    let result = wait_for(&s, id, "result").await;
+    let body: Value = serde_json::from_slice(&result[0].body).unwrap();
+    assert_eq!(body["status"], "failed");
+    assert_eq!(body["retryable"], true);
+    assert!(body["error"].as_str().unwrap().contains("does not match its hash"), "{body}");
+    // Before failing, the finished images were saved for the next attempt.
+    let progress = calls(&s, id, "progress").await;
+    let last: Value = serde_json::from_slice(&progress.last().expect("checkpoint sent").body).unwrap();
+    let items = last["checkpoint"]["items"].as_array().unwrap();
+    assert_eq!(items.iter().map(|i| i["index"].as_u64().unwrap()).collect::<Vec<_>>(), vec![0, 1]);
+    assert_eq!(items[1]["label"], fx[1].1);
     rig.stop.send(true).unwrap();
     rig.task.await.unwrap();
 }
