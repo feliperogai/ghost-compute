@@ -85,11 +85,16 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 | GET | `/v1/jobs/:id/events` | viewer | trilha de eventos |
 | POST | `/v1/jobs/:id/cancel` | dono ou admin | cancelar |
 | GET | `/v1/jobs` | viewer | histórico (`status`, `type`, `owner=me\|uuid`, `since`, `until`, cursor) |
+| POST | `/v1/datasets` · `/:id/images` · `/:id/seal` | operator | dataset de imagens PNG/JPEG ([ADR 004](../docs/adr/004-image-inference.md)) |
+| POST | `/v1/inference` | operator | inferência em lotes paralelos (`datasetId, batchSize, accelerator, topK, timeoutSeconds, maxAttempts`) |
+| GET | `/v1/inference/:id` · `/result` | dono | progresso · resultado combinado com `resultSha256` |
+| POST | `/v1/inference/:id/cancel` | dono | cancelar todos os lotes |
 | POST | `/v1/worker/heartbeat` | worker | estado, uso, **capacidade**, **tipos suportados** → `assignments`, `cancelAssignmentIds` |
 | — | scheduler | — | detecta offline, expira, recupera, aplica timeout, aloca |
 | GET | `/v1/worker/assignments` | worker | atribuições pendentes (também via WS `job.assigned`) |
 | POST | `/v1/worker/assignments/:id/accept` · `/reject` | worker | aceitar/recusar |
-| POST | `/v1/worker/assignments/:id/progress` | worker | progresso (0–1, `stage`) |
+| POST | `/v1/worker/assignments/:id/progress` | worker | progresso (0–1, `stage`, `checkpoint` validado) |
+| GET | `/v1/worker/assignments/:id/images/:index` | worker | bytes de uma imagem do próprio lote (`image-inference`) |
 | POST | `/v1/worker/assignments/:id/result` | worker | `completed` (output + sha256) · `failed` (`error`, `retryable`) |
 | GET | `/v1/worker/me/stats` | worker | contagens, créditos internos, histórico |
 | GET | `/healthz` · `/readyz` | — | liveness / readiness |
@@ -99,7 +104,7 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 Autenticação por header `Authorization` ou primeira mensagem `{"type":"auth","token":"…"}` em até 5 s. Tokens nunca vão na URL.
 
 - **Usuário** recebe `{"type":"event","event":{type,ts,data}}`. Pode filtrar: `{"type":"subscribe","types":["job."],"jobId":"…"}`.
-  Eventos: `worker.registered|online|offline|state|heartbeat|revoked`, `job.created|updated|progress`.
+  Eventos: `worker.registered|online|offline|state|heartbeat|revoked`, `job.created|updated|progress`, `inference.created|finished`.
 - **Worker** recebe `job.assigned`, `assignment.cancel`, `worker.revoked` (a conexão fecha com código 4003). Ofertas pendentes são reenviadas ao conectar.
 
 Códigos de fechamento: 4001 não autorizado · 4003 revogado · 4008 timeout de auth · 1008 rate limit.
@@ -110,4 +115,4 @@ JSON (pino) com `reqId` (aceita `x-request-id`), `userId`/`workerId` após auth,
 
 ## Fora do escopo (ainda)
 
-Execução de código, registro/assinatura de módulos, object store para blobs grandes, mTLS, OIDC, métricas OpenTelemetry.
+Registro/assinatura de módulos, object store para blobs grandes, mTLS, OIDC, métricas OpenTelemetry.

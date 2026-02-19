@@ -7,6 +7,8 @@ import { sha256Hex } from '../auth/crypto.js';
 import { AppError, badRequest, conflict, notFound } from '../errors.js';
 import { countsAsFailure, defaultRetryPolicy, type AttemptOutcome, type RetryPolicy } from '../scheduler/retry.js';
 import type { JobStatus, Placement, Resources } from '../scheduler/types.js';
+import { refreshGroupForJob } from '../inference/groups.js';
+import { validateCheckpoint } from '../inference/schemas.js';
 
 export interface AssignmentOffer {
   assignmentId: string;
@@ -19,7 +21,13 @@ export interface AssignmentOffer {
   resources: Resources;
   timeoutSeconds: number;
   acceptBy: string;
+  /** Partial results of an earlier attempt (resumable workloads). */
+  checkpoint?: unknown;
 }
+
+/** Called after a job reaches a terminal state (groups aggregate their batches). */
+export type TerminalHook = (jobId: string) => Promise<void>;
+const TERMINAL: readonly JobStatus[] = ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT'];
 
 interface JobRow {
   id: string;
@@ -33,6 +41,9 @@ interface JobRow {
   max_attempts: number;
   failures: number;
   created_at: Date;
+  group_id: string | null;
+  checkpoint: unknown;
+  retry_on_timeout: boolean;
 }
 
 interface AssignmentRow {
@@ -62,10 +73,15 @@ interface After {
 }
 
 export class JobLifecycle {
+  private readonly onTerminal: TerminalHook;
+
   constructor(
     private readonly ctx: AppContext,
     private readonly policy: RetryPolicy = defaultRetryPolicy,
-  ) {}
+    onTerminal?: TerminalHook,
+  ) {
+    this.onTerminal = onTerminal ?? ((jobId) => refreshGroupForJob(ctx, jobId));
+  }
 
   // ---- scheduler ---------------------------------------------------------------
 
@@ -127,6 +143,7 @@ export class JobLifecycle {
         resources: job.resources,
         timeoutSeconds: job.timeout_seconds,
         acceptBy: row.accept_deadline.toISOString(),
+        ...(job.checkpoint != null ? { checkpoint: job.checkpoint } : {}),
       } satisfies AssignmentOffer;
     });
     if (offer) {
@@ -147,7 +164,8 @@ export class JobLifecycle {
 
   async pendingFor(workerId: string): Promise<AssignmentOffer[]> {
     const { rows } = await this.ctx.db.query(
-      `SELECT a.id, a.attempt, a.accept_deadline, j.id AS job_id, j.name, j.type, j.input, j.resources, j.timeout_seconds
+      `SELECT a.id, a.attempt, a.accept_deadline, j.id AS job_id, j.name, j.type, j.input, j.resources, j.timeout_seconds,
+              j.checkpoint
          FROM job_assignments a JOIN jobs j ON j.id = a.job_id
         WHERE a.worker_id = $1 AND a.status = 'assigned' AND a.accept_deadline > now()
         ORDER BY a.assigned_at`,
@@ -163,6 +181,7 @@ export class JobLifecycle {
       resources: r.resources,
       timeoutSeconds: r.timeout_seconds,
       acceptBy: r.accept_deadline.toISOString(),
+      ...(r.checkpoint != null ? { checkpoint: r.checkpoint } : {}),
     }));
   }
 
@@ -183,10 +202,23 @@ export class JobLifecycle {
     return { assignmentId, status: 'running' };
   }
 
-  async progress(workerId: string, assignmentId: string, progress: number, stage?: string) {
+  async progress(
+    workerId: string,
+    assignmentId: string,
+    progress: number,
+    stage?: string,
+    checkpoint?: unknown,
+  ) {
     const jobId = await withTx(this.ctx.db, async (c) => {
       const { job, a } = await this.lockOwned(c, workerId, assignmentId);
       if (a.status !== 'running') throw notActive();
+      if (checkpoint !== undefined) {
+        // Only resumable jobs keep checkpoints, and only ones that fit the job's own input.
+        if (!job.group_id) throw badRequest('This job does not accept checkpoints');
+        const problem = validateCheckpoint(job.input, checkpoint);
+        if (problem) throw badRequest(`Invalid checkpoint: ${problem}`);
+        await c.query(`UPDATE jobs SET checkpoint = $2 WHERE id = $1`, [job.id, JSON.stringify(checkpoint)]);
+      }
       await c.query(`UPDATE job_assignments SET last_seen_at = now() WHERE id = $1`, [a.id]);
       const prev = await c.query<{ stage: string | null }>(`SELECT stage FROM jobs WHERE id = $1`, [job.id]);
       await c.query(`UPDATE jobs SET progress = $2, stage = COALESCE($3, stage), updated_at = now() WHERE id = $1`, [
@@ -281,6 +313,12 @@ export class JobLifecycle {
         if (!chain || chain.a.status !== 'running' || !chain.a.started_at) return null;
         if (chain.a.started_at.getTime() + chain.job.timeout_seconds * 1000 > Date.now()) return null;
         const { job, a } = chain;
+        if (job.retry_on_timeout) {
+          // Resumable: retry (from the checkpoint) like any other lost attempt.
+          const r = await this.endAttempt(c, job, a, { kind: 'timeout' }, `exceeded ${job.timeout_seconds}s`);
+          r.cancelOnWorker = { workerId: a.worker_id, assignmentId: a.id, reason: 'timeout' };
+          return r;
+        }
         const err = { code: 'TIMEOUT', message: `exceeded ${job.timeout_seconds}s` };
         await c.query(`UPDATE job_assignments SET status = 'timeout', finished_at = now(), error = $2 WHERE id = $1`, [a.id, err.message]);
         await c.query(
@@ -401,13 +439,16 @@ export class JobLifecycle {
     const err =
       o.kind === 'failed' && !o.retryable
         ? { code: 'JOB_FAILED', message: error }
-        : { code: 'MAX_ATTEMPTS', message: `${failures} failed attempt(s); last: ${o.kind}: ${error}` };
+        : o.kind === 'timeout'
+          ? { code: 'TIMEOUT', message: `${failures} attempt(s) timed out; last: ${error}` }
+          : { code: 'MAX_ATTEMPTS', message: `${failures} failed attempt(s); last: ${o.kind}: ${error}` };
+    const status: JobStatus = o.kind === 'timeout' ? 'TIMEOUT' : 'FAILED';
     await c.query(
-      `UPDATE jobs SET status = 'FAILED', failures = $2, error = $3, finished_at = now(), updated_at = now() WHERE id = $1`,
-      [job.id, failures, err],
+      `UPDATE jobs SET status = $4, failures = $2, error = $3, finished_at = now(), updated_at = now() WHERE id = $1`,
+      [job.id, failures, err, status],
     );
-    await event(c, job.id, a.id, a.worker_id, 'job.failed', { ...err, attempt: o.kind });
-    return { ...base, status: 'FAILED' };
+    await event(c, job.id, a.id, a.worker_id, status === 'TIMEOUT' ? 'job.timeout' : 'job.failed', { ...err, attempt: o.kind });
+    return { ...base, status };
   }
 
   private async after(r: After) {
@@ -426,6 +467,7 @@ export class JobLifecycle {
       assignmentId: r.assignmentId,
       ...r.extra,
     });
+    if (TERMINAL.includes(r.status)) await this.onTerminal(r.jobId);
   }
 }
 

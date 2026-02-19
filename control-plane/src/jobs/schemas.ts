@@ -5,6 +5,7 @@ import { JOB_STATUSES } from '../scheduler/types.js';
 
 export const MAX_INPUT_BYTES = 256 * 1024;
 export const MAX_OUTPUT_BYTES = 256 * 1024;
+export const MAX_CHECKPOINT_BYTES = 256 * 1024;
 
 const json = (maxBytes: number) =>
   z.unknown().refine((v) => v !== undefined && Buffer.byteLength(JSON.stringify(v)) <= maxBytes, {
@@ -50,6 +51,8 @@ export const createJobSchema = z
     const t = workloadType(j.type)!;
     if (t.requiresGpu && !j.resources.gpu)
       ctx.addIssue({ code: 'custom', path: ['resources', 'gpu'], message: `type '${j.type}' requires a GPU` });
+    if (t.internal)
+      ctx.addIssue({ code: 'custom', path: ['type'], message: `type '${j.type}' is created through ${t.internal}` });
     if (!t.supportsGpu && j.resources.gpu)
       ctx.addIssue({ code: 'custom', path: ['resources', 'gpu'], message: `type '${j.type}' cannot use a GPU` });
     // Parameters are validated per type: strict schemas, no free-form fields.
