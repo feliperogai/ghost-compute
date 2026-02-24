@@ -1,4 +1,5 @@
 // Postgres/Redis implementation of the scheduler ports.
+import { toPerformanceView } from '../performance/service.js';
 import type { AppContext } from '../context.js';
 import type { JobSpec, Placement, SchedulerMonitors, SchedulerStore, WorkerSnapshot } from '../scheduler/index.js';
 import { JobLifecycle } from './lifecycle.js';
@@ -20,8 +21,12 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
     const ids = await this.ctx.queue.peek(limit);
     if (ids.length === 0) return [];
     const { rows } = await this.ctx.db.query(
-      `SELECT j.id, j.type, j.priority, j.requirements, j.resources, j.created_at,
-              COALESCE(x.workers, '{}') AS excluded
+      `SELECT j.id, j.type, j.priority, j.requirements, j.resources, j.created_at, j.timeout_seconds,
+              COALESCE(x.workers, '{}') AS excluded,
+              CASE WHEN j.type = 'image-inference' THEN jsonb_build_object(
+                'items', jsonb_array_length(j.input->'images'),
+                'bytes', (SELECT COALESCE(sum((i->>'size')::bigint), 0) FROM jsonb_array_elements(j.input->'images') i),
+                'accelerator', COALESCE(j.input->>'accelerator', 'auto')) END AS work
          FROM jobs j
          LEFT JOIN LATERAL (
            SELECT array_agg(DISTINCT a.worker_id) AS workers FROM job_assignments a
@@ -45,14 +50,18 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
       resources: r.resources,
       createdAt: r.created_at,
       excludedWorkers: r.excluded,
+      timeoutSeconds: r.timeout_seconds,
+      ...(r.work ? { work: { items: r.work.items, bytes: Number(r.work.bytes), accelerator: r.work.accelerator } } : {}),
     }));
   }
 
   async workers(): Promise<WorkerSnapshot[]> {
     const { rows } = await this.ctx.db.query(
       `SELECT w.id, w.state, w.last_seen_at, w.max_concurrent_tasks, w.workload_types, w.hardware, w.capacity, w.last_usage,
-              r.n, r.cpu, r.ram, r.gpu, r.vram, r.disk, h.completed, h.failed
+              r.n, r.cpu, r.ram, r.gpu, r.vram, r.disk, h.completed, h.failed,
+              p.profile, p.verified, p.observed
          FROM workers w
+         LEFT JOIN worker_performance p ON p.worker_id = w.id
          LEFT JOIN LATERAL (
            SELECT count(*)::int AS n,
                   COALESCE(sum((a.reserved->>'cpuCores')::float), 0) AS cpu,
@@ -82,6 +91,7 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
       reserved: { cpuCores: r.cpu, ramMb: r.ram, gpu: r.gpu, vramMb: r.vram, diskMb: r.disk },
       activeAssignments: r.n,
       recent: { completed: r.completed, failed: r.failed },
+      performance: toPerformanceView(r.profile, r.verified, r.observed),
     }));
   }
 

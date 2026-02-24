@@ -57,6 +57,10 @@ pub struct Executor {
     slots: usize,
     runs: Mutex<HashMap<Uuid, Run>>,
     gpu_override: Mutex<Option<GpuMode>>,
+    /// Calibration in progress (no jobs meanwhile, so the numbers are clean).
+    calibrating: Mutex<Option<(Uuid, CancellationToken)>>,
+    /// Calibrations already reported (the server may repeat the request until it records it).
+    calibrated: Mutex<HashSet<Uuid>>,
 }
 
 /// How an attempt ended, as reported to the server.
@@ -193,6 +197,8 @@ impl Executor {
             slots: slots.max(1),
             runs: Mutex::new(HashMap::new()),
             gpu_override: Mutex::new(None),
+            calibrating: Mutex::new(None),
+            calibrated: Mutex::new(HashSet::new()),
         })
     }
 
@@ -202,7 +208,7 @@ impl Executor {
     }
 
     /// GPU only if the owner shares one and this machine has one.
-    fn gpu_mode(&self, owner: &Limits) -> GpuMode {
+    pub fn gpu_mode(&self, owner: &Limits) -> GpuMode {
         if let Some(m) = *self.gpu_override.lock().unwrap() {
             return m;
         }
@@ -221,9 +227,87 @@ impl Executor {
         self.runs.lock().unwrap().len()
     }
 
+    pub fn calibrating(&self) -> bool {
+        self.calibrating.lock().unwrap().is_some()
+    }
+
     fn publish(&self) {
-        let views = self.runs.lock().unwrap().values().map(|r| r.view.clone()).collect();
+        let mut views: Vec<ActiveWorkload> = self.runs.lock().unwrap().values().map(|r| r.view.clone()).collect();
+        // The owner sees the calibration like any other workload.
+        if let Some((id, _)) = *self.calibrating.lock().unwrap() {
+            views.push(ActiveWorkload {
+                assignment_id: id,
+                job_id: id,
+                job_name: "Calibração: medindo o desempenho deste computador".into(),
+                workload_type: "calibration".into(),
+                progress: 0.0,
+                stage: None,
+                started_at: chrono::Utc::now(),
+            });
+        }
         self.shared.set_workloads(views);
+    }
+
+    /// Runs the benchmark suite the server asked for, when the machine is free for it.
+    pub fn start_calibration(
+        self: &Arc<Self>,
+        req: &crate::networking::api::CalibrationRequest,
+        accepting: bool,
+        owner: &Limits,
+    ) {
+        if !accepting || self.running() > 0 || self.calibrated.lock().unwrap().contains(&req.id) {
+            return;
+        }
+        let cancel = {
+            let mut c = self.calibrating.lock().unwrap();
+            if c.is_some() {
+                return;
+            }
+            if let Err(e) = crate::calibration::validate(&req.params, &req.nonce) {
+                warn!(calibration_id = %req.id, error = %e, "calibration request refused");
+                self.calibrated.lock().unwrap().insert(req.id);
+                return;
+            }
+            let t = CancellationToken::new();
+            *c = Some((req.id, t.clone()));
+            t
+        };
+        self.publish();
+        info!(calibration_id = %req.id, reason = %req.reason, "calibration started");
+        let (me, req, owner) = (self.clone(), req.clone(), owner.clone());
+        let gpu = self.gpu_mode(&owner);
+        tokio::spawn(async move {
+            let cx = crate::calibration::Context {
+                client: &me.client,
+                sandbox: &me.sandbox,
+                hardware: &me.shared.hardware,
+                snapshot: me.shared.snapshot(),
+                owner,
+                gpu,
+                scratch: me.sandbox.work_root().join("calibration"),
+                cancel: cancel.clone(),
+            };
+            let t = Instant::now();
+            let res = crate::calibration::run(&cx, &req).await;
+            match res {
+                // Stopped by the owner: the server keeps the request open; it runs again later.
+                Err(_) if cancel.is_cancelled() => info!(calibration_id = %req.id, "calibration interrupted"),
+                Err(e) => {
+                    warn!(calibration_id = %req.id, error = %e, "calibration failed");
+                    me.calibrated.lock().unwrap().insert(req.id);
+                }
+                Ok(report) => {
+                    match me.client.calibration_report(req.id, &report).await {
+                        Ok(r) => info!(calibration_id = %req.id, status = %r["status"], scores = %r["scores"],
+                                       elapsed_ms = t.elapsed().as_millis() as u64, "calibration reported"),
+                        Err(e) => warn!(calibration_id = %req.id, error = %e, "calibration report failed"),
+                    }
+                    me.calibrated.lock().unwrap().insert(req.id);
+                }
+            }
+            *me.calibrating.lock().unwrap() = None;
+            me.publish();
+        });
     }
 
     /// Validates, accepts and starts an assignment, or returns why it must be declined.
@@ -236,7 +320,7 @@ impl Executor {
         if !accepting {
             return Err(Decline::NotAccepting);
         }
-        if self.running() >= self.slots {
+        if self.running() >= self.slots || self.calibrating() {
             return Err(Decline::Busy);
         }
         let mut limits = sandbox_limits(a, owner, self.shared.hardware.cpu.threads);
@@ -429,6 +513,9 @@ impl Executor {
 
     /// Owner paused/stopped, or a hard limit (heat, battery, owner activity) was hit.
     pub fn preempt_all(&self, reason: &str) {
+        if let Some((_, c)) = self.calibrating.lock().unwrap().as_ref() {
+            c.cancel();
+        }
         for r in self.runs.lock().unwrap().values() {
             *r.local_reason.lock().unwrap() = Some(reason.to_string());
             r.cancel.cancel();
@@ -440,6 +527,7 @@ fn describe(w: &Workload) -> String {
     match w {
         Workload::Benchmark(p) => format!("{:?}", p.kind).to_lowercase(),
         Workload::ImageInference(p) => format!("{} images", p.images.len()),
+        Workload::GpuProbe(p) => format!("{0}x{0}", p.size),
     }
 }
 

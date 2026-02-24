@@ -10,6 +10,7 @@ import { workerRoutes } from './modules/workers/routes.js';
 import { assignmentRoutes, jobRoutes } from './jobs/routes.js';
 import { registerWebSocket } from './events/ws.js';
 import { inferenceRoutes, workerImageRoutes } from './inference/routes.js';
+import { calibrationWorkerRoutes, performanceRoutes } from './performance/routes.js';
 
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({
@@ -63,6 +64,8 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   await app.register(assignmentRoutes(ctx));
   await app.register(inferenceRoutes(ctx));
   await app.register(workerImageRoutes(ctx));
+  await app.register(calibrationWorkerRoutes(ctx));
+  await app.register(performanceRoutes(ctx));
   registerWebSocket(app, ctx);
 
   return app;

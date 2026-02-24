@@ -42,6 +42,13 @@ const gpuWorker = (id: string, over: Partial<WorkerSnapshot> = {}) =>
     workloadTypes: ['benchmark', 'gpu-test'],
     hardware: { os: { name: 'Windows' }, cpu: { cores: 8, features: [] }, ramMb: 32768, gpus: [{ name: 'RTX', vendor: 'NVIDIA', vramMb: 12288 }] },
     capacity: { cpuCores: 4, ramMb: 8192, gpuPercent: 50, vramMb: 12288, diskMb: 10_000, maxTemperatureC: 85 },
+    performance: {
+      cpuScore: 1000,
+      inference: { cpuItemsPerSec: 400, gpuItemsPerSec: 4000 },
+      gpu: { verified: true, vramAvailableMb: 10_000, nvidia: true },
+      network: { latencyMs: 5, downloadMbps: 500 },
+      observed: {},
+    },
     ...over,
   });
 
@@ -78,6 +85,13 @@ describe('eligibility (hard constraints)', () => {
     expect(ineligibility(gj, { ...g, reserved: { ...zeroResources(), gpu: true } }, opts)).toBe('NO_GPU');
     // Owner shares no GPU.
     expect(ineligibility(gj, { ...g, capacity: { ...g.capacity!, gpuPercent: 0 } }, opts)).toBe('NO_GPU');
+    // "Has a GPU" is not enough: it must be calibrated and verified.
+    expect(ineligibility(gj, { ...g, performance: null }, opts)).toBe('GPU_NOT_CALIBRATED');
+    const unverified = { ...g.performance!, gpu: { verified: false, vramAvailableMb: 10_000, nvidia: true } };
+    expect(ineligibility(gj, { ...g, performance: unverified }, opts)).toBe('GPU_UNVERIFIED');
+    // Measured free VRAM counts, not only the inventory.
+    const busyVram = { ...g.performance!, gpu: { verified: true, vramAvailableMb: 1000, nvidia: true } };
+    expect(ineligibility({ ...gj, requirements: { minVramMb: 2000 } }, { ...g, performance: busyVram }, opts)).toBe('INSUFFICIENT_VRAM');
   });
 });
 
@@ -98,7 +112,9 @@ describe('weighted strategy', () => {
   });
 
   it('keeps GPU workers free for GPU jobs', () => {
-    const r = s.place([job('cpu-job')], [gpuWorker('g'), worker('c')], opts);
+    // Same measured CPU speed: the CPU-only worker takes the CPU job.
+    const cpuPerf = { ...gpuWorker('x').performance!, gpu: null, inference: { cpuItemsPerSec: 400, gpuItemsPerSec: null } };
+    const r = s.place([job('cpu-job')], [gpuWorker('g'), worker('c', { performance: cpuPerf })], opts);
     expect(r.placements[0]?.workerId).toBe('c');
     const g = s.place([job('gpu-job', { type: 'gpu-test', resources: { cpuCores: 1, ramMb: 512, gpu: true, vramMb: 2048, diskMb: 0 } })], [gpuWorker('g'), worker('c')], opts);
     expect(g.placements[0]?.workerId).toBe('g');
@@ -126,7 +142,7 @@ describe('weighted strategy', () => {
     const b = score(job('j'), worker('w'), opts);
     expect(b.total).toBeGreaterThan(0);
     expect(b.total).toBeLessThanOrEqual(1);
-    expect(Object.keys(b.components).sort()).toEqual(['availability', 'cpu', 'gpu', 'load', 'ram', 'reliability', 'thermal']);
+    expect(Object.keys(b.components).sort()).toEqual(['availability', 'cpu', 'gpu', 'load', 'performance', 'ram', 'reliability', 'thermal']);
   });
 });
 

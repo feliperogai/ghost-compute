@@ -24,6 +24,7 @@ Operador ──REST──▶ control-plane ──(heartbeat, atribuições, HTTP
 - **Nenhuma execução arbitrária.** Jobs só referenciam tipos registrados e carregam parâmetros validados; o código é embutido no agente e fixado por hash ([ADR 003](docs/adr/003-isolated-execution.md)).
 - **O dono manda.** Compartilhamento começa desligado; pausar e parar são imediatos; limites de CPU, RAM, temperatura, horário, ociosidade, jogos e apps prioritários são locais e o servidor não os relaxa.
 - **O servidor não confia no worker.** Resultados são verificados por hash; o scheduler revalida toda decisão e o banco impede sobrealocação.
+- **Escolha por desempenho medido.** Cada worker é calibrado ao entrar (CPU, GPU, VRAM, RAM, latência, banda, disco) e o scheduler usa esse perfil e o throughput real, não só "tem GPU" ([ADR 005](docs/adr/005-worker-calibration.md)).
 
 ## Workloads
 

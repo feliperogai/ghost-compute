@@ -233,3 +233,28 @@ async fn tiny_memory_or_deadline_stop_the_batch() {
     assert!(r.result.is_err());
     assert!(t.elapsed() < Duration::from_secs(10));
 }
+
+#[tokio::test]
+async fn gpu_probe_returns_the_exact_checksum_the_server_expects() {
+    let root = tempfile::tempdir().unwrap();
+    let sb = Sandbox::new(EXE.into(), root.path().to_path_buf());
+    let w = Workload::parse_local("gpu-probe", &serde_json::json!({ "size": 512, "maxIterations": 8 })).unwrap();
+    let r = sb
+        .run_with(&w, limits(true), Input { gpu: GpuMode::Any, ..Default::default() }, |_| {}, CancellationToken::new())
+        .await;
+    match r {
+        // Same vector as control-plane/test/performance.test.ts.
+        Ok(out) => {
+            assert_eq!(out["checksum"], "213", "{out}");
+            assert!(out["iterations"].as_u64().unwrap() >= 1);
+        }
+        Err(SandboxError::Workload { code, message }) => {
+            assert_eq!(code, "GPU");
+            eprintln!("no GPU adapter here: {message}");
+        }
+        Err(e) => panic!("{e}"),
+    }
+    // Owner does not share a GPU: refused.
+    let off = sb.run_with(&w, limits(true), Input::default(), |_| {}, CancellationToken::new()).await;
+    assert!(matches!(off, Err(SandboxError::Workload { ref code, .. }) if code == "GPU_OFF"), "{off:?}");
+}

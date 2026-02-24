@@ -1,5 +1,6 @@
 //! ghost Windows worker agent.
 
+pub mod calibration;
 pub mod configuration;
 pub mod execution;
 pub mod hardware;

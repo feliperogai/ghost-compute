@@ -51,7 +51,9 @@ impl HeartbeatLoop {
             }
             self.shared.set_decision(decision.clone());
             // A hard limit or the owner says stop: kill running workloads now, before reporting.
-            if let Some(ex) = self.executor.as_ref().filter(|ex| decision.preempt && ex.running() > 0) {
+            if let Some(ex) =
+                self.executor.as_ref().filter(|ex| decision.preempt && (ex.running() > 0 || ex.calibrating()))
+            {
                 let why = decision.reasons.first().map(|r| format!("{r:?}")).unwrap_or_else(|| "owner".into());
                 warn!(reason = %why, "preempting running workloads");
                 ex.preempt_all(&why);
@@ -89,6 +91,9 @@ impl HeartbeatLoop {
                                 Err(e) => warn!(assignment_id = %id, error = %e, "failed to decline assignment"),
                             }
                         }
+                    }
+                    if let (Some(ex), Some(c)) = (&self.executor, &res.calibration) {
+                        ex.start_calibration(c, accepting, self.policy.limits());
                     }
                     if last_stats.is_none_or(|t| t.elapsed() >= STATS_REFRESH) {
                         match self.client.stats().await {

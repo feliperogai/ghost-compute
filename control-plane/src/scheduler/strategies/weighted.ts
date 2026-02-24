@@ -1,6 +1,7 @@
 // Default strategy: greedy by priority; each job goes to the eligible worker
 // with the best weighted score. Every component is normalized to [0, 1].
 import { available, ineligibility, reserve, type EligibilityOptions } from '../eligibility.js';
+import { performanceComponent, usesGpu } from '../performance.js';
 import type { PlacementStrategy } from '../strategy.js';
 import type { IneligibleReason, JobSpec, PlacementResult, ScoreBreakdown, WorkerSnapshot } from '../types.js';
 
@@ -19,6 +20,8 @@ export interface Weights {
   reliability: number;
   /** Freshness of the last heartbeat. */
   availability: number;
+  /** Measured speed for this job (calibration profile, then real-job throughput). */
+  performance: number;
 }
 
 export const DEFAULT_WEIGHTS: Weights = {
@@ -29,6 +32,7 @@ export const DEFAULT_WEIGHTS: Weights = {
   load: 0.2,
   reliability: 0.15,
   availability: 0.05,
+  performance: 0.4,
 };
 
 const clamp01 = (v: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
@@ -45,11 +49,13 @@ export function score(job: JobSpec, w: WorkerSnapshot, o: EligibilityOptions, we
   const c: Record<string, number> = {
     cpu: clamp01((a.cpuCores - r.cpuCores) / (cap.cpuCores || 1)),
     ram: clamp01((a.ramMb - r.ramMb) / (cap.ramMb || 1)),
-    gpu: r.gpu ? clamp01((a.vramMb - r.vramMb) / (cap.vramMb || 1)) : cap.gpuPercent > 0 ? 0.5 : 1,
+    // Jobs that will use this worker's GPU score VRAM headroom; others keep GPU boxes free.
+    gpu: r.gpu || usesGpu(job, w) ? clamp01((a.vramMb - r.vramMb) / (cap.vramMb || 1)) : cap.gpuPercent > 0 ? 0.5 : 1,
     thermal: temp == null ? 0.7 : clamp01((cap.maxTemperatureC - temp) / Math.max(1, cap.maxTemperatureC - 30)),
     load: clamp01(0.5 * (1 - ownerCpu / 100) + 0.5 * (1 - w.activeAssignments / Math.max(1, w.maxConcurrent))),
     reliability: (w.recent.completed + 1) / (w.recent.completed + w.recent.failed + 2),
     availability: clamp01(1 - ageMs / o.offlineAfterMs),
+    performance: clamp01(performanceComponent(job, w)),
   };
   let total = 0;
   let wsum = 0;
