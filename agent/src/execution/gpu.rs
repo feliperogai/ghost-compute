@@ -179,7 +179,7 @@ impl Dense {
         rx.recv().map_err(|_| "map callback dropped".to_string())?.map_err(|e| format!("map: {e}"))?;
         let data = staging.slice(..).get_mapped_range().map_err(|e| format!("map range: {e}"))?;
         let vals: &[f32] = bytemuck::cast_slice(&data);
-        let out = vals.chunks_exact(CLASSES).map(|c| c.try_into().unwrap()).collect();
+        let out = vals.as_chunks::<CLASSES>().0.to_vec();
         drop(data);
         staging.unmap();
         Ok(out)

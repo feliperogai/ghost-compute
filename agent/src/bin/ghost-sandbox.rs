@@ -229,8 +229,8 @@ fn image_inference(
             Err(e) => return wasm_fail(e),
         };
         let mut x = [0f32; INPUT];
-        for (v, c) in x.iter_mut().zip(feat.chunks_exact(4)) {
-            *v = f32::from_le_bytes(c.try_into().unwrap());
+        for (v, c) in x.iter_mut().zip(feat.as_chunks::<4>().0) {
+            *v = f32::from_le_bytes(*c);
         }
 
         if let Some(_g) = &gpu {
@@ -253,8 +253,8 @@ fn image_inference(
             Err(e) => return wasm_fail(e),
         };
         let mut pr = [0f32; CLASSES];
-        for (v, c) in pr.iter_mut().zip(probs.chunks_exact(4)) {
-            *v = f32::from_le_bytes(c.try_into().unwrap());
+        for (v, c) in pr.iter_mut().zip(probs.as_chunks::<4>().0) {
+            *v = f32::from_le_bytes(*c);
         }
         emit(&Event::Item { item: InferenceItem::predicted(index, &pr, p.top_k) });
         done += 1;
