@@ -89,7 +89,8 @@ async fn wasm_memory_cap_applies_to_real_workloads() {
     assert!(!r.unwrap_err().retryable());
 }
 
-/// Unix: RLIMIT_AS. Windows: Job Object ProcessMemoryLimit.
+/// Unix: RLIMIT_AS counts address space, so 8 MiB cannot even hold the runtime.
+#[cfg(unix)]
 #[tokio::test]
 async fn process_memory_cap_is_enforced_by_the_os() {
     let root = tempfile::tempdir().unwrap();
@@ -97,6 +98,57 @@ async fn process_memory_cap_is_enforced_by_the_os() {
     l.process_memory_bytes = 8 << 20; // too small for the runtime itself
     let r = sandbox(&root).run(&bench(BenchmarkKind::Primes, 100, 1), l, |_| {}, CancellationToken::new()).await;
     assert!(matches!(r, Err(SandboxError::Crashed(_))), "{r:?}");
+}
+
+/// Both platforms (Windows: Job Object ProcessMemoryLimit, which counts committed
+/// memory): a workload that needs more memory than the process cap fails even though
+/// its WebAssembly cap would allow it, and the same run succeeds without the cap.
+#[tokio::test]
+async fn process_memory_cap_stops_a_workload_that_needs_more() {
+    use ghost_agent::execution::registry::{Accelerator, ImageInferenceParams, ImageRef};
+    use ghost_agent::execution::sandbox::{Input, Update};
+    use sha2::{Digest, Sha256};
+    // 4000×4000 grayscale: 15 KB compressed, ~32 MiB once decoded and converted.
+    let png = include_bytes!("fixtures/blank-4000x4000.png").to_vec();
+    let w = Workload::ImageInference(ImageInferenceParams {
+        images: vec![ImageRef { index: 0, sha256: hex::encode(Sha256::digest(&png)), size: png.len() as u32 }],
+        accelerator: Accelerator::Cpu,
+        top_k: 1,
+    });
+    let run = |process_mb: u64| {
+        let (png, w) = (png.clone(), w.clone());
+        async move {
+            let root = tempfile::tempdir().unwrap();
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.send((0, png)).await.unwrap();
+            drop(tx);
+            let mut l = limits(30_000);
+            l.wasm_memory_bytes = 256 << 20;
+            l.process_memory_bytes = process_mb << 20;
+            let mut items = Vec::new();
+            let r = sandbox(&root)
+                .run_with(
+                    &w,
+                    l,
+                    Input { inputs: vec![0], frames: Some(rx), ..Default::default() },
+                    |u| {
+                        if let Update::Item(i) = u {
+                            items.push(i)
+                        }
+                    },
+                    CancellationToken::new(),
+                )
+                .await;
+            (r, items)
+        }
+    };
+    let (ok, items) = run(1024).await;
+    assert!(ok.is_ok(), "{ok:?}");
+    assert!(items[0].label.is_some(), "{items:?}");
+
+    let (capped, items) = run(24).await;
+    assert!(capped.is_err(), "24 MiB process cap did not stop a ~32 MiB workload: {capped:?}");
+    assert!(items.iter().all(|i| i.label.is_none()), "{items:?}");
 }
 
 #[tokio::test]
