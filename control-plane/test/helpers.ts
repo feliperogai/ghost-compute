@@ -33,7 +33,7 @@ export async function setup(overrides: Record<string, string> = {}): Promise<Har
 
 export async function reset(rt: Runtime) {
   await rt.db.query(
-    `TRUNCATE audit_log, worker_performance, worker_calibrations, job_events, job_assignments, jobs, job_groups, dataset_images, datasets, enrollment_tokens,
+    `TRUNCATE audit_log, scheduler_decisions, worker_performance, worker_calibrations, job_events, job_assignments, jobs, job_groups, dataset_images, datasets, enrollment_tokens,
               workers, api_tokens, users CASCADE`,
   );
   await rt.redis.flushdb();

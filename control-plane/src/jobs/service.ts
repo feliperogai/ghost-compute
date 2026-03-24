@@ -107,8 +107,14 @@ export class JobService {
          FROM job_assignments WHERE job_id = $1 ORDER BY attempt`,
       [id],
     );
+    const d = await this.ctx.db.query<{ summary: string }>(
+      `SELECT summary FROM scheduler_decisions WHERE job_id = $1 ORDER BY id DESC LIMIT 1`,
+      [id],
+    );
     return {
       ...toDto(rows[0], true),
+      /** Latest "Worker X foi escolhido porque ..." (full history: /decisions). */
+      placementReason: d.rows[0]?.summary ?? null,
       assignments: a.rows.map((r) => ({
         id: r.id,
         workerId: r.worker_id,
@@ -151,6 +157,28 @@ export class JobService {
     return {
       items: page.map((r) => toDto(r)),
       nextCursor: rows.length > f.limit && last ? encodeCursor(last.created_at, last.id) : null,
+    };
+  }
+
+  /** Why each attempt went where it went. */
+  async decisions(id: string) {
+    await this.assertExists(id);
+    const { rows } = await this.ctx.db.query(
+      `SELECT id, assignment_id, worker_id, strategy, score, summary, explanation, created_at
+         FROM scheduler_decisions WHERE job_id = $1 ORDER BY id`,
+      [id],
+    );
+    return {
+      items: rows.map((r) => ({
+        id: Number(r.id),
+        assignmentId: r.assignment_id,
+        workerId: r.worker_id,
+        strategy: r.strategy,
+        score: r.score,
+        summary: r.summary,
+        explanation: r.explanation,
+        createdAt: r.created_at.toISOString(),
+      })),
     };
   }
 

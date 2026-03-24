@@ -50,6 +50,12 @@ export const jobRoutes =
     );
 
     app.get(
+      '/v1/jobs/:id/decisions',
+      { onRequest: requireUser(ctx, 'viewer'), schema: { params: uuidParam } },
+      async (req) => svc.decisions(req.params.id),
+    );
+
+    app.get(
       '/v1/jobs/:id/events',
       {
         onRequest: requireUser(ctx, 'viewer'),
