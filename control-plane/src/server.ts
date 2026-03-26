@@ -2,6 +2,7 @@ import { buildApp } from './app.js';
 import { createRuntime } from './bootstrap.js';
 import { migrate } from './db/migrate.js';
 import { SchedulerRunner } from './jobs/runner.js';
+import { MetricsCollector } from './observability/collector.js';
 
 const rt = await createRuntime();
 const app = await buildApp(rt);
@@ -13,6 +14,8 @@ if (process.env.MIGRATE_ON_START !== 'false') {
 
 const scheduler = new SchedulerRunner(rt, app.log);
 if (rt.config.SCHEDULER_ENABLED) scheduler.start();
+const collector = new MetricsCollector(rt, app.log);
+collector.start();
 
 let shuttingDown = false;
 async function shutdown(signal: string) {
@@ -22,6 +25,7 @@ async function shutdown(signal: string) {
   const force = setTimeout(() => process.exit(1), 15_000).unref();
   try {
     await scheduler.stop();
+    await collector.stop();
     await app.close();
     await rt.close();
     clearTimeout(force);

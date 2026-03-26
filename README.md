@@ -9,6 +9,7 @@ Plataforma de computação distribuída em **rede privada**: computadores Window
 | [`control-plane/`](control-plane/) | API REST + WebSocket, autenticação, jobs e scheduler | TypeScript, Fastify, PostgreSQL, Redis |
 | [`agent/`](agent/) | Worker para Windows: hardware, monitoramento, política do dono, heartbeat, execução isolada | Rust, Wasmtime |
 | [`desktop/`](desktop/) | App do dono do computador: estado, controles e configurações | Tauri 2, React |
+| [`dashboard/`](dashboard/) | Painel web da rede: métricas, histórico, workers, erros (servido em `/dashboard/`) | React, Vite, SVG |
 | [`ipc/`](ipc/) | Protocolo local entre app e agente (named pipe / Unix socket) | Rust |
 | [`workloads/`](workloads/) | Workloads embutidos no agente (WebAssembly): `benchmark` e `image-inference` | Rust → wasm32 |
 | [`docs/`](docs/) | [Arquitetura](docs/ARCHITECTURE.md) e decisões ([ADRs](docs/adr/)) | — |
