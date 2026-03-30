@@ -44,6 +44,7 @@ src/
   modules/{admin,workers}
   scheduler/           algoritmo de alocação (independente)
   jobs/                ciclo de vida, API, adaptador do scheduler
+  credits/             créditos virtuais: regras (pricing), ledger imutável, API
 migrations/            SQL versionado
 ```
 
@@ -97,11 +98,19 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 | POST | `/v1/worker/assignments/:id/progress` | worker | progresso (0–1, `stage`, `checkpoint` validado) |
 | GET | `/v1/worker/assignments/:id/images/:index` | worker | bytes de uma imagem do próprio lote (`image-inference`) |
 | POST | `/v1/worker/assignments/:id/result` | worker | `completed` (output + sha256) · `failed` (`error`, `retryable`) |
-| GET | `/v1/worker/me/stats` | worker | contagens, créditos internos, histórico |
+| GET | `/v1/worker/me/stats` | worker | contagens, créditos ganhos (do ledger), histórico |
 | GET | `/v1/worker/calibration/ping` · `/:id/download` · POST `/:id/upload` · `/:id/report` | worker | calibração: latência, banda (stream por nonce), relatório verificado ([ADR 005](../docs/adr/005-worker-calibration.md)) |
 | GET | `/v1/workers/:id/profile` | viewer | `WorkerPerformanceProfile`, resumo, throughput observado, histórico |
 | POST | `/v1/workers/:id/calibrate` | admin | forçar nova calibração |
 | GET | `/v1/dashboard/overview` · `/history?range=1h\|6h\|24h\|7d` · `/workers` · `/workers/:id` · `/errors` | viewer | observabilidade para o [painel](../dashboard/) (servido em `/dashboard/`) |
+| GET | `/v1/credits/wallet` | viewer | saldo (derivado do ledger), reservas abertas, totais por tipo — [ADR 007](../docs/adr/007-internal-credits.md) |
+| GET | `/v1/credits/transactions` | viewer | extrato da própria carteira, com saldo após cada movimento (`kind`, cursor) |
+| GET | `/v1/credits/earnings` | viewer | ganhos dos próprios workers (admin: todos), com o cálculo de cada um (`workerId`) |
+| GET | `/v1/credits/spending` | viewer | custo de cada job: reservado, cobrado, devolvido, tentativas cobradas |
+| GET | `/v1/credits/workers/:id/wallet` · `/transactions` | dono ou admin | carteira de um worker |
+| POST | `/v1/credits/workers/:id/withdraw` | dono (operator) | ganhos do worker → carteira do dono (`amount`, `idempotencyKey`) |
+| POST | `/v1/credits/grants` | admin | conceder créditos (`userId`, `amount`, `reason`, `idempotencyKey`) |
+| GET | `/v1/credits/ledger` · `/ledger/verify` · `/summary` | admin | ledger completo com hashes · recálculo de todos os invariantes · totais |
 | GET | `/healthz` · `/readyz` | — | liveness / readiness |
 
 ## WebSocket `GET /v1/ws`

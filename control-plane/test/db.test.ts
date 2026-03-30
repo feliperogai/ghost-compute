@@ -49,6 +49,6 @@ describe('migrations', () => {
     await ins();
     await expect(ins()).rejects.toThrow(/job_assignments_one_active/);
     await expect(db.query(`UPDATE jobs SET status = 'DONE'`)).rejects.toThrow(/check/);
-    await db.query(`TRUNCATE users, workers, jobs CASCADE`);
+    await db.query(`BEGIN; SET LOCAL ghost.allow_ledger_truncate = 'on'; TRUNCATE users, workers, jobs CASCADE; COMMIT`);
   });
 });

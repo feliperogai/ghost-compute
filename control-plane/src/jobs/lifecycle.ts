@@ -10,6 +10,7 @@ import type { JobStatus, Placement, Resources } from '../scheduler/types.js';
 import { refreshGroupForJob } from '../inference/groups.js';
 import { validateCheckpoint } from '../inference/schemas.js';
 import { CalibrationService } from '../performance/service.js';
+import { earnForAssignment, settleJob } from '../credits/service.js';
 
 export interface AssignmentOffer {
   assignmentId: string;
@@ -260,6 +261,9 @@ export class JobLifecycle {
         [job.id, JSON.stringify(output), actual],
       );
       await event(c, job.id, a.id, workerId, 'job.completed', { attempt: a.attempt, outputSha256: actual });
+      // Credits move in the same transaction as the state change: all or nothing.
+      await earnForAssignment(c, a.id);
+      await settleJob(c, job.id);
       return {
         jobId: job.id,
         status: 'COMPLETED' as const,
@@ -352,6 +356,7 @@ export class JobLifecycle {
           [job.id, err],
         );
         await event(c, job.id, a.id, a.worker_id, 'job.timeout', err);
+        await settleJob(c, job.id);
         return {
           jobId: job.id,
           status: 'TIMEOUT' as const,
@@ -398,6 +403,7 @@ export class JobLifecycle {
         [jobId, { code: 'CANCELLED', message: reason }],
       );
       await event(c, jobId, a?.id ?? null, a?.worker_id ?? null, 'job.cancelled', { reason });
+      await settleJob(c, jobId);
       return {
         jobId,
         status: 'CANCELLED' as const,
@@ -450,6 +456,8 @@ export class JobLifecycle {
   /** Ends an attempt and applies the retry policy. Caller holds job + assignment locks. */
   private async endAttempt(c: pg.PoolClient, job: JobRow, a: AssignmentRow, o: AttemptOutcome, error: string): Promise<After> {
     await c.query(`UPDATE job_assignments SET status = $2, finished_at = now(), error = $3 WHERE id = $1`, [a.id, o.kind, error]);
+    // A resumable attempt that timed out keeps its checkpoint: that work is paid for.
+    if (o.kind === 'timeout' && job.retry_on_timeout && a.started_at) await earnForAssignment(c, a.id);
     const failures = job.failures + (countsAsFailure(o.kind) ? 1 : 0);
     const decision = this.policy.decide(o, failures, job.max_attempts);
     const base = { jobId: job.id, workerId: a.worker_id, assignmentId: a.id };
@@ -474,6 +482,7 @@ export class JobLifecycle {
       [job.id, failures, err, status],
     );
     await event(c, job.id, a.id, a.worker_id, status === 'TIMEOUT' ? 'job.timeout' : 'job.failed', { ...err, attempt: o.kind });
+    await settleJob(c, job.id);
     return { ...base, status };
   }
 

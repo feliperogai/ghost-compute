@@ -113,7 +113,7 @@ export function SidePanels({ status }: { status: Status }) {
           {s ? s.credits.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : '—'}
           <span className="stat-unit">créditos</span>
         </div>
-        <p className="note">1 crédito = 1 minuto de processamento concluído. Uso interno da rede, sem valor monetário.</p>
+        <p className="note">Total ganho: tempo de processamento × recursos × desempenho × disponibilidade. Créditos virtuais da rede, sem valor monetário.</p>
       </section>
 
       <section className="panel" aria-labelledby="jobs-title">

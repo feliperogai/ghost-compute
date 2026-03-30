@@ -4,6 +4,7 @@ import { audit } from '../../audit.js';
 import { generateSecret, hashSecret } from '../../auth/crypto.js';
 import { conflict } from '../../errors.js';
 import type { Role } from '../../auth/plugin.js';
+import { grantSignup } from '../../credits/service.js';
 
 export async function createUserWithToken(
   ctx: AppContext,
@@ -24,6 +25,7 @@ export async function createUserWithToken(
       input.tokenName,
       hashSecret(token),
     ]);
+    await grantSignup(ctx, c, userId);
     await audit(c, {
       actorType: actorId ? 'user' : 'system',
       actorId,
