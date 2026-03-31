@@ -7,8 +7,9 @@
 // the job's priority band. No learning, no randomness: the same jobs and workers give
 // the same placements and the same explanation text.
 import { available, ineligibility, reserve, type EligibilityOptions } from '../eligibility.js';
-import { estimateSeconds, performanceComponent, usesGpu } from '../performance.js';
+import { estimateSeconds, performanceComponent } from '../performance.js';
 import type { PlacementStrategy } from '../strategy.js';
+import { DEFAULT_OFFER, priceRate, STANDARD_PRICE } from '../../market/offer.js';
 import type {
   DecisionExplanation,
   IneligibleReason,
@@ -38,10 +39,8 @@ export const priorityBand = (p: number) => (p >= 70 ? 'high' : p < 30 ? 'low' : 
 const STABLE_AFTER_MS = 60 * 60 * 1000;
 /** Latency at which the latency term is 0.5. */
 const LATENCY_REF_MS = 100;
-/** Internal cost (credits) at which cost efficiency is 0.5. */
-const COST_REF_CREDITS = 1;
-/** Internal credits per minute: one per reserved core, GPUs weigh more (power, scarcity). */
-const GPU_CREDITS_PER_MIN = 4;
+/** Estimated cost (millicredits) at which price efficiency is 0.5. */
+const COST_REF_MILLI = 1000;
 
 const clamp01 = (v: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
@@ -79,28 +78,46 @@ function terms(job: JobSpec, w: WorkerSnapshot, o: EligibilityOptions): Record<T
     factors: { heartbeatAgeS: r3(ageMs / 1000), onlineMinutes: onlineMs === null ? null : Math.floor(onlineMs / 60_000) },
   };
 
-  // Reliability: failure rate over recent attempts (Laplace-smoothed, so a newcomer is 0.5).
+  // Reliability: the provider's objective reputation (completed jobs, failure rate, uptime,
+  // response time). Without it: failure rate over recent attempts (Laplace-smoothed).
+  const rep = w.reputation;
   const { completed, failed } = w.recent;
-  const reliability = {
-    value: (completed + 1) / (completed + failed + 2),
-    factors: { completed, failed },
-  };
+  const reliability: TermInput = rep
+    ? {
+        value: rep.score / 1000,
+        factors: {
+          reputation: rep.score,
+          completed: rep.metrics.completed,
+          failed: rep.metrics.failed,
+          failureRate: rep.metrics.failureRate,
+          uptime: rep.metrics.uptime,
+          avgResponseSeconds: rep.metrics.avgResponseSeconds,
+        },
+      }
+    : { value: (completed + 1) / (completed + failed + 2), factors: { reputation: null, completed, failed } };
 
-  // Resource fit: headroom left, not wasting a GPU, internal cost.
+  // Resource fit: headroom left, not wasting a GPU, and the provider's price.
   const headroom = 0.5 * clamp01((a.cpuCores - res.cpuCores) / (cap.cpuCores || 1)) + 0.5 * clamp01((a.ramMb - res.ramMb) / (cap.ramMb || 1));
-  const gpuJob = res.gpu || usesGpu(job, w);
   // Jobs that require a GPU: VRAM headroom (unknown VRAM counts as fine). Jobs that would
   // only opportunistically use it ("auto"), or not at all: the GPU is a scarce resource
   // being tied up, so a GPU machine fits worse; the performance term pays it back when
   // the GPU really is much faster.
   const vramFit = cap.vramMb ? clamp01((a.vramMb - res.vramMb) / cap.vramMb) : 1;
   const gpuFit = res.gpu ? vramFit : cap.gpuPercent > 0 ? 0.5 : 1;
-  const ratePerMin = res.cpuCores + (gpuJob ? GPU_CREDITS_PER_MIN : 0);
-  const cost = est === null ? null : (est / 60) * ratePerMin;
-  const costEff = cost === null ? 0.5 : COST_REF_CREDITS / (COST_REF_CREDITS + cost);
+  // Price: estimated cost when the duration is known, otherwise the price per minute
+  // against the standard price (equal → 0.5, half → 0.67, double → 0.33).
+  const rate = priceRate((w.offer ?? DEFAULT_OFFER).price, res);
+  const standard = priceRate(STANDARD_PRICE, res);
+  const cost = est === null ? null : Math.ceil((est / 60) * rate);
+  const priceEff = cost === null ? standard / (standard + rate) : COST_REF_MILLI / (COST_REF_MILLI + cost);
   const resource_fit = {
-    value: 0.4 * headroom + 0.3 * gpuFit + 0.3 * costEff,
-    factors: { headroom: r3(headroom), gpuFit: r3(gpuFit), internalCostCredits: cost === null ? null : r3(cost) },
+    value: 0.35 * headroom + 0.15 * gpuFit + 0.5 * priceEff,
+    factors: {
+      headroom: r3(headroom),
+      gpuFit: r3(gpuFit),
+      pricePerMinute: r3(rate / 1000),
+      estimatedCostCredits: cost === null ? null : r3(cost / 1000),
+    },
   };
 
   // Latency (penalty): matters most for jobs that move data item by item.
@@ -164,10 +181,16 @@ const REASON_PT: Record<IneligibleReason, string> = {
   TOO_HOT: 'temperatura perto do limite',
   NO_SLOTS: 'sem vaga livre',
   EXCLUDED: 'já falhou neste job',
+  NOT_LISTED: 'fora do mercado',
+  OUTSIDE_AVAILABILITY: 'fora da janela de disponibilidade',
+  PROVIDER_LIMITS: 'fora dos limites do provedor',
+  OVER_BUDGET: 'preço acima do orçamento',
+  LOW_REPUTATION: 'reputação abaixo do mínimo',
 };
 
 const fmt = (v: number, d = 2) => v.toFixed(d).replace('.', ',');
 const num = (v: unknown) => (typeof v === 'number' ? fmt(v, Number.isInteger(v) ? 0 : 2) : String(v));
+const pct = (v: unknown) => (typeof v === 'number' ? `${fmt(v * 100, 0)}%` : '?');
 const plural = (n: unknown, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const label = (w: WorkerSnapshot) => (w.name ? `${w.name} (${w.id.slice(0, 8)})` : w.id.slice(0, 8));
 
@@ -185,11 +208,13 @@ function phrase(name: TermName, win: ScoreTerm, other: ScoreTerm | null): string
     case 'availability':
       return `mais disponível (online há ${vs(f.onlineMinutes ?? '?', o?.onlineMinutes ?? undefined, ' min')})`;
     case 'reliability':
-      return `mais confiável (${plural(f.completed, 'concluído', 'concluídos')}, ${plural(f.failed, 'falha recente', 'falhas recentes')}${o ? ` vs ${num(o.completed)}/${num(o.failed)}` : ''})`;
+      return f.reputation !== null
+        ? `reputação maior (${vs(f.reputation, o?.reputation)}; ${plural(f.completed, 'job concluído', 'jobs concluídos')}, falhas ${pct(f.failureRate)}, uptime ${pct(f.uptime)}, resposta ${f.avgResponseSeconds === null ? '?' : `${num(f.avgResponseSeconds)} s`})`
+        : `mais confiável (${plural(f.completed, 'concluído', 'concluídos')}, ${plural(f.failed, 'falha recente', 'falhas recentes')}${o ? ` vs ${num(o.completed)}/${num(o.failed)}` : ''})`;
     case 'resource_fit':
-      return f.internalCostCredits !== null
-        ? `melhor encaixe de recursos e custo interno menor (${vs(f.internalCostCredits, o?.internalCostCredits, ' créditos')})`
-        : `melhor encaixe de recursos (folga ${fmt(Number(f.headroom))}, GPU ${fmt(Number(f.gpuFit))})`;
+      return f.estimatedCostCredits !== null
+        ? `mais barato para este job (${vs(f.estimatedCostCredits, o?.estimatedCostCredits, ' créditos')} estimados, ${vs(f.pricePerMinute, o?.pricePerMinute, ' créditos/min')})`
+        : `melhor preço e encaixe (${vs(f.pricePerMinute, o?.pricePerMinute, ' créditos/min')}, folga ${fmt(Number(f.headroom))})`;
     case 'latency':
       return `menor latência (${vs(f.latencyMs ?? '?', o?.latencyMs ?? undefined, ' ms')})`;
     case 'current_load':

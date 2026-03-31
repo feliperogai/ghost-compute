@@ -3,8 +3,15 @@ import type { AppContext } from '../context.js';
 import { forbidden, unauthorized } from '../errors.js';
 import { hashSecret, hasPrefix, verifyWorkerToken } from './crypto.js';
 
-export type Role = 'admin' | 'operator' | 'viewer';
-const RANK: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
+/**
+ * member: public account (customer and/or provider) — only its own jobs, computers and
+ * credits. viewer/operator/admin: platform staff (dashboards, every job and worker).
+ */
+export type Role = 'admin' | 'operator' | 'viewer' | 'member';
+const RANK: Record<Role, number> = { member: 0, viewer: 1, operator: 2, admin: 3 };
+
+/** Staff roles see the whole platform; members only what they own. */
+export const isStaff = (role: Role) => RANK[role] >= RANK.viewer;
 
 export type Principal =
   | { kind: 'user'; userId: string; role: Role; tokenId: string }

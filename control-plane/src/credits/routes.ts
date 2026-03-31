@@ -6,24 +6,7 @@ import { requireUser, userId } from '../auth/plugin.js';
 import { unauthorized } from '../errors.js';
 import { uuidParam } from '../modules/schemas.js';
 import { CreditService, type CreditActor } from './service.js';
-import { toMilli } from './pricing.js';
-
-/** Max credits in one grant or withdrawal. */
-const MAX_CREDITS = 1_000_000_000;
-
-/** Positive credit amount with at most 3 decimals → millicredits. Rejects 0, negatives, NaN, 1e-4. */
-const creditAmount = z
-  .number()
-  .positive()
-  .max(MAX_CREDITS)
-  .transform((v, ctx) => {
-    const m = toMilli(v);
-    if (m === null || m <= 0) {
-      ctx.addIssue({ code: 'custom', message: `amount must be a positive number of credits with at most 3 decimals` });
-      return z.NEVER;
-    }
-    return m;
-  });
+import { creditAmount } from './pricing.js';
 
 const idempotencyKey = z.string().regex(/^[A-Za-z0-9._:-]{8,128}$/, 'idempotencyKey: 8–128 of [A-Za-z0-9._:-]');
 
@@ -43,12 +26,12 @@ export const creditRoutes =
   async (app) => {
     const svc = new CreditService(ctx);
 
-    app.get('/v1/credits/wallet', { onRequest: requireUser(ctx, 'viewer') }, async (req) => svc.userWallet(userId(req)));
+    app.get('/v1/credits/wallet', { onRequest: requireUser(ctx, 'member') }, async (req) => svc.userWallet(userId(req)));
 
     app.get(
       '/v1/credits/transactions',
       {
-        onRequest: requireUser(ctx, 'viewer'),
+        onRequest: requireUser(ctx, 'member'),
         schema: {
           querystring: page.extend({ kind: z.enum(['grant', 'earning', 'hold', 'settlement', 'withdrawal']).optional() }),
         },
@@ -59,31 +42,31 @@ export const creditRoutes =
 
     app.get(
       '/v1/credits/earnings',
-      { onRequest: requireUser(ctx, 'viewer'), schema: { querystring: page.extend({ workerId: z.uuid().optional() }) } },
+      { onRequest: requireUser(ctx, 'member'), schema: { querystring: page.extend({ workerId: z.uuid().optional() }) } },
       async (req) =>
         svc.earnings(actor(req), { workerId: req.query.workerId, limit: req.query.limit, beforeSeq: req.query.cursor }),
     );
 
-    app.get('/v1/credits/spending', { onRequest: requireUser(ctx, 'viewer'), schema: { querystring: page } }, async (req) =>
+    app.get('/v1/credits/spending', { onRequest: requireUser(ctx, 'member'), schema: { querystring: page } }, async (req) =>
       svc.spending(userId(req), { limit: req.query.limit, beforeSeq: req.query.cursor }),
     );
 
     app.get(
       '/v1/credits/workers/:id/wallet',
-      { onRequest: requireUser(ctx, 'viewer'), schema: { params: uuidParam } },
+      { onRequest: requireUser(ctx, 'member'), schema: { params: uuidParam } },
       async (req) => svc.workerWallet(actor(req), req.params.id),
     );
 
     app.get(
       '/v1/credits/workers/:id/transactions',
-      { onRequest: requireUser(ctx, 'viewer'), schema: { params: uuidParam, querystring: page } },
+      { onRequest: requireUser(ctx, 'member'), schema: { params: uuidParam, querystring: page } },
       async (req) => svc.workerTransactions(actor(req), req.params.id, { limit: req.query.limit, beforeSeq: req.query.cursor }),
     );
 
     app.post(
       '/v1/credits/workers/:id/withdraw',
       {
-        onRequest: requireUser(ctx, 'operator'),
+        onRequest: requireUser(ctx, 'member'),
         schema: { params: uuidParam, body: z.object({ amount: creditAmount, idempotencyKey }).strict() },
       },
       async (req, reply) => {

@@ -10,6 +10,8 @@ export async function createUserWithToken(
   ctx: AppContext,
   input: { email: string; role: Role; tokenName: string },
   actorId: string | null,
+  /** Welcome credits; default CREDITS_INITIAL_GRANT. */
+  grantCredits = ctx.config.CREDITS_INITIAL_GRANT,
 ) {
   const token = generateSecret('user');
   return withTx(ctx.db, async (c) => {
@@ -25,7 +27,7 @@ export async function createUserWithToken(
       input.tokenName,
       hashSecret(token),
     ]);
-    await grantSignup(ctx, c, userId);
+    await grantSignup(c, userId, grantCredits);
     await audit(c, {
       actorType: actorId ? 'user' : 'system',
       actorId,

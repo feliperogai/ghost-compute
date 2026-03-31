@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { WORKLOAD_TYPES, workloadType } from '../scheduler/catalog.js';
 import { INPUT_SCHEMAS } from './workloads.js';
 import { JOB_STATUSES } from '../scheduler/types.js';
+import { creditAmount } from '../credits/pricing.js';
 
 export const MAX_INPUT_BYTES = 256 * 1024;
 export const MAX_OUTPUT_BYTES = 256 * 1024;
@@ -20,6 +21,8 @@ export const requirementsSchema = z
     minRamMb: z.number().int().min(1).max(16 * 1024 * 1024).optional(),
     gpuVendor: z.enum(['NVIDIA', 'AMD', 'Intel']).optional(),
     minVramMb: z.number().int().min(1).max(1024 * 1024).optional(),
+    /** Only providers with at least this reputation (0–1000). */
+    minReputation: z.number().int().min(0).max(1000).optional(),
   })
   .strict();
 
@@ -44,6 +47,8 @@ export const createJobSchema = z
     /** Max running time per attempt, seconds. */
     timeout: z.number().int().min(10).max(604_800).optional(),
     maxAttempts: z.number().int().min(1).max(10).default(3),
+    /** Most the job may cost, in credits (held at creation). Default: standard price × timeout. */
+    budget: creditAmount.optional(),
     input: json(MAX_INPUT_BYTES),
   })
   .strict()

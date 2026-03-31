@@ -349,15 +349,17 @@ Garantias:
 |---|---|
 | Workload escapar para o host | WASM + AppContainer + Job Object + low integrity. Sem código nativo. Wasmtime atualizado. |
 | Servidor comprometido envia código malicioso | Assinatura offline de módulos verificada no Worker. |
-| Worker malicioso forja resultados | Hash, validação de schema, redundância opcional, reputação por worker. |
-| Worker lê dados sensíveis de inputs | Rede privada, workers confiáveis. Classificar jobs; não enviar dado sensível no MVP. |
+| Worker malicioso forja resultados | Hash, validação de schema, reputação objetiva por worker ([ADR 008](adr/008-open-platform.md)). **Aberto:** execução redundante / verificação por amostragem ainda não existe; na plataforma aberta um provedor pode devolver resultado errado com hash coerente. |
+| Worker lê dados sensíveis de inputs | Plataforma aberta: **provedores veem os inputs dos jobs que executam**. Clientes não devem enviar dados sensíveis. Só tipos registrados; imagens só do lote atribuído. |
 | Roubo de credencial do Worker | Chave em TPM, cert 7 dias, revogação imediata. |
 | Token de enrollment vazado | Uso único, TTL curto, aprovação manual opcional. |
 | Escalada local via agente | Serviço sem admin; pipe com DACL; nenhuma API de "executar comando". |
 | Agent atualizado maliciosamente | Updates assinados (Authenticode + assinatura própria); canal separado. |
 | Exfiltração pela rede | Sandbox sem rede. Agent só fala com hosts fixos (pinning). |
 | DoS no host | Limites rígidos do Job Object; prioridade IDLE; kill imediato. |
-| Side-channel (Spectre etc.) | Sem timers de alta resolução no WASI; sem threads compartilhadas no MVP. Risco residual aceito em rede privada. |
+| Side-channel (Spectre etc.) | Sem timers de alta resolução no WASI; sem threads compartilhadas no MVP. Risco residual: na plataforma aberta, jobs de clientes diferentes podem rodar lado a lado no mesmo computador. |
+| Contas falsas (Sybil) para créditos grátis ou reputação | Cadastro limitado por IP, crédito de boas-vindas pequeno (`SIGNUP_CREDITS`), jobs do próprio dono não contam para reputação. **Aberto:** um provedor com várias contas ainda pode simular clientes. |
+| Membro vê dados de outros | Papel `member`: só os próprios jobs, computadores e créditos; ids alheios respondem 404; sem WebSocket global nem painel. |
 | Dashboard (XSS/CSRF) | CSP estrita, cookies SameSite, CSRF token, escape padrão do framework. |
 
 ### 10.2 Práticas

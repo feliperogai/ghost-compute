@@ -1,7 +1,8 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { AppContext } from '../context.js';
-import { requireUser, requireWorker, userId, workerId } from '../auth/plugin.js';
+import { isStaff, requireUser, requireWorker, userId, workerId } from '../auth/plugin.js';
+import type { FastifyRequest } from 'fastify';
 import { unauthorized } from '../errors.js';
 import { boundedJson, optionalBody, uuidParam } from '../modules/schemas.js';
 import { WORKLOAD_TYPES } from '../scheduler/catalog.js';
@@ -9,24 +10,30 @@ import { createJobSchema, jobStatusSchema, MAX_CHECKPOINT_BYTES, resultSchema } 
 import { JobService } from './service.js';
 import { JobLifecycle } from './lifecycle.js';
 
+/** Staff see every job; public members only their own (others' ids answer 404). */
+function viewer(req: FastifyRequest) {
+  if (req.principal?.kind !== 'user') throw unauthorized();
+  return { userId: req.principal.userId, role: req.principal.role };
+}
+
 /** Owner/operator API. */
 export const jobRoutes =
   (ctx: AppContext): FastifyPluginAsyncZod =>
   async (app) => {
     const svc = new JobService(ctx);
 
-    app.get('/v1/workload-types', { onRequest: requireUser(ctx, 'viewer') }, async () => ({ items: WORKLOAD_TYPES }));
+    app.get('/v1/workload-types', { onRequest: requireUser(ctx, 'member') }, async () => ({ items: WORKLOAD_TYPES }));
 
     app.post(
       '/v1/jobs',
-      { onRequest: requireUser(ctx, 'operator'), schema: { body: createJobSchema } },
+      { onRequest: requireUser(ctx, 'member'), schema: { body: createJobSchema } },
       async (req, reply) => reply.status(201).send(await svc.create(req.body, userId(req))),
     );
 
     app.get(
       '/v1/jobs',
       {
-        onRequest: requireUser(ctx, 'viewer'),
+        onRequest: requireUser(ctx, 'member'),
         schema: {
           querystring: z.object({
             status: jobStatusSchema.optional(),
@@ -41,24 +48,31 @@ export const jobRoutes =
       },
       async (req) => {
         const { owner, ...q } = req.query;
-        return svc.list({ ...q, ownerId: owner === 'me' ? userId(req) : owner });
+        const v = viewer(req);
+        // Members list their own jobs, whatever they ask for.
+        const ownerId = !isStaff(v.role) || owner === 'me' ? v.userId : owner;
+        return svc.list({ ...q, ownerId });
       },
     );
 
-    app.get('/v1/jobs/:id', { onRequest: requireUser(ctx, 'viewer'), schema: { params: uuidParam } }, async (req) =>
-      svc.get(req.params.id),
-    );
+    app.get('/v1/jobs/:id', { onRequest: requireUser(ctx, 'member'), schema: { params: uuidParam } }, async (req) => {
+      await svc.assertVisible(req.params.id, viewer(req));
+      return svc.get(req.params.id);
+    });
 
     app.get(
       '/v1/jobs/:id/decisions',
-      { onRequest: requireUser(ctx, 'viewer'), schema: { params: uuidParam } },
-      async (req) => svc.decisions(req.params.id),
+      { onRequest: requireUser(ctx, 'member'), schema: { params: uuidParam } },
+      async (req) => {
+        await svc.assertVisible(req.params.id, viewer(req));
+        return svc.decisions(req.params.id);
+      },
     );
 
     app.get(
       '/v1/jobs/:id/events',
       {
-        onRequest: requireUser(ctx, 'viewer'),
+        onRequest: requireUser(ctx, 'member'),
         schema: {
           params: uuidParam,
           querystring: z.object({
@@ -67,13 +81,16 @@ export const jobRoutes =
           }),
         },
       },
-      async (req) => svc.events(req.params.id, req.query.afterId, req.query.limit),
+      async (req) => {
+        await svc.assertVisible(req.params.id, viewer(req));
+        return svc.events(req.params.id, req.query.afterId, req.query.limit);
+      },
     );
 
     app.post(
       '/v1/jobs/:id/cancel',
       {
-        onRequest: requireUser(ctx, 'operator'),
+        onRequest: requireUser(ctx, 'member'),
         schema: {
           params: uuidParam,
           body: optionalBody(z.object({ reason: z.string().trim().min(1).max(500).default('cancelled by owner') })),
