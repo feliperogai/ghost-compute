@@ -3,7 +3,8 @@
 // There is no rating, review, like or comment anywhere in the platform, and nothing a
 // provider or customer writes enters this computation. Inputs:
 //   - jobs completed        (assignments the worker finished, for other people's jobs)
-//   - failure rate          (failed + timeout + lost + expired over finished attempts)
+//   - failure rate          (timeouts, lost, expired, contradicted results, and failures
+//                            that were the worker's — not the job's — over finished attempts)
 //   - uptime                (minutes offering work, from heartbeats received)
 //   - mean response time    (assigned → accepted, server clock on both ends)
 // Jobs whose customer also owns the worker are ignored (self-dealing cannot build reputation).
@@ -69,6 +70,17 @@ export function computeReputation(m: ReputationMetrics): Reputation {
   };
 }
 
+/** Counts only once verified: a replica still waiting for a second opinion is not "completed" yet. */
+const COMPLETED = `x.status = 'completed' AND (j.verification = 'none' OR x.verdict = 'agreed')`;
+/**
+ * The worker's fault: it vanished, timed out, failed for environment reasons, returned a
+ * result other computers contradicted, or claimed "bad job" on a job someone else then
+ * completed. A job that fails everywhere is the job's fault, not the worker's.
+ */
+const FAILED = `x.status IN ('timeout', 'lost', 'expired')
+  OR x.verdict = 'disagreed'
+  OR (x.status = 'failed' AND (x.retryable IS DISTINCT FROM false OR j.status = 'COMPLETED'))`;
+
 /** Metrics for many workers in one query (all from server-side records). */
 export async function loadReputations(db: pg.Pool | pg.PoolClient, workerIds?: string[]): Promise<Map<string, Reputation>> {
   const { rows } = await db.query<{
@@ -87,9 +99,9 @@ export async function loadReputations(db: pg.Pool | pg.PoolClient, workerIds?: s
             GREATEST(0, floor(EXTRACT(EPOCH FROM now() - GREATEST(w.created_at, now() - make_interval(days => $3))) / 60))::int AS window_minutes
        FROM workers w
        LEFT JOIN LATERAL (
-         SELECT count(*) FILTER (WHERE x.status = 'completed')::int AS completed,
-                count(*) FILTER (WHERE x.status IN ('failed', 'timeout', 'lost', 'expired'))::int AS failed,
-                count(DISTINCT j.owner_id) FILTER (WHERE x.status = 'completed')::int AS customers,
+         SELECT count(*) FILTER (WHERE ${COMPLETED})::int AS completed,
+                count(*) FILTER (WHERE ${FAILED})::int AS failed,
+                count(DISTINCT j.owner_id) FILTER (WHERE ${COMPLETED})::int AS customers,
                 avg(EXTRACT(EPOCH FROM x.started_at - x.assigned_at)) FILTER (WHERE x.started_at IS NOT NULL)::float8 AS avg_response
            FROM job_assignments x JOIN jobs j ON j.id = x.job_id
           WHERE x.worker_id = w.id AND x.finished_at IS NOT NULL

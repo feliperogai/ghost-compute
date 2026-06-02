@@ -5,6 +5,9 @@ import { withTx } from '../db/pool.js';
 import { AppError, conflict, notFound } from '../errors.js';
 import { audit } from '../audit.js';
 import { defaultBudget, holdForJobs } from '../credits/service.js';
+import { MAX_REPLICAS } from '../jobs/verification.js';
+import { isStaff } from '../auth/plugin.js';
+import { checkActiveJobs } from '../modules/quotas.js';
 import { combine, type BatchRow } from './aggregate.js';
 import type { Actor } from './datasets.js';
 import { MAX_BATCH_BYTES, MAX_BATCHES, type CreateInferenceInput } from './schemas.js';
@@ -50,6 +53,7 @@ export class InferenceService {
       const batches = splitBatches(images, input.batchSize);
       if (batches.length > MAX_BATCHES)
         throw new AppError(422, 'TOO_MANY_BATCHES', `At most ${MAX_BATCHES} batches; use a larger batchSize`);
+      await checkActiveJobs(this.ctx, c, actor.userId, actor.role, batches.length);
 
       const params = {
         batchSize: input.batchSize,
@@ -74,8 +78,12 @@ export class InferenceService {
         ...(input.minReputation !== undefined ? { minReputation: input.minReputation } : {}),
       };
       const resources = { cpuCores: 1, ramMb: 512, gpu, vramMb: 0, diskMb: 0 };
-      // Timed-out batches resume and each attempt that ran is paid: room for every attempt.
-      const budget = input.budgetPerBatch ?? defaultBudget(resources, input.timeoutSeconds) * input.maxAttempts;
+      const verification = input.verification ?? (isStaff(actor.role) ? 'none' : 'replicate');
+      // Unverified: timed-out batches resume and each attempt that ran is paid. Verified:
+      // every replica is paid, and none resumes from another computer's checkpoint.
+      const budget =
+        input.budgetPerBatch ??
+        defaultBudget(resources, input.timeoutSeconds) * (verification === 'replicate' ? MAX_REPLICAS : input.maxAttempts);
       const rows = batches.map((b, i) => ({
         name: `${input.name ?? 'inference'} · batch ${i + 1}/${batches.length}`,
         batch_index: i,
@@ -87,11 +95,11 @@ export class InferenceService {
       }));
       const created = await c.query<{ id: string; created_at: Date }>(
         `INSERT INTO jobs (owner_id, name, type, requirements, resources, priority, timeout_seconds, max_attempts,
-                           input, group_id, batch_index, retry_on_timeout, budget)
-         SELECT $1, r.name, 'image-inference', $2, $3, $4, $5, $6, r.input, $7, r.batch_index, true, $9
+                           input, group_id, batch_index, retry_on_timeout, budget, verification)
+         SELECT $1, r.name, 'image-inference', $2, $3, $4, $5, $6, r.input, $7, r.batch_index, $10::text = 'none', $9, $10
            FROM jsonb_to_recordset($8::jsonb) AS r(name text, batch_index int, input jsonb)
          RETURNING id, created_at`,
-        [actor.userId, requirements, resources, input.priority, input.timeoutSeconds, input.maxAttempts, g.id, JSON.stringify(rows), budget],
+        [actor.userId, requirements, resources, input.priority, input.timeoutSeconds, input.maxAttempts, g.id, JSON.stringify(rows), budget, verification],
       );
       await c.query(
         `INSERT INTO job_events (job_id, type, payload)

@@ -72,6 +72,17 @@ export const marketRoutes =
       async (req) => svc.setOffer(userId(req), req.params.id, req.body),
     );
 
+    // A provider can take a computer off the platform for good (e.g. it was stolen or
+    // compromised): its credentials stop working at once and its jobs are re-routed.
+    app.post(
+      '/v1/provider/workers/:id/revoke',
+      {
+        onRequest: requireUser(ctx, 'member'),
+        schema: { params: uuidParam, body: z.object({ reason: z.string().trim().min(1).max(500) }).strict() },
+      },
+      async (req) => svc.revoke(userId(req), req.params.id, req.body.reason),
+    );
+
     // ---- customers ----------------------------------------------------------------
 
     app.get(
@@ -109,6 +120,7 @@ export const marketRoutes =
               timeout: z.number().int().min(10).max(604_800).default(ctx.config.JOB_DEFAULT_TIMEOUT_SECONDS),
               priority: z.number().int().min(0).max(100).default(50),
               budget: creditAmount.optional(),
+              verification: z.enum(['none', 'replicate']).optional(),
             })
             .strict(),
         },

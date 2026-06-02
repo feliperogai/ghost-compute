@@ -17,16 +17,21 @@ export async function createUserWithToken(
   return withTx(ctx.db, async (c) => {
     const existing = await c.query(`SELECT 1 FROM users WHERE email = $1`, [input.email]);
     if (existing.rows.length) throw conflict('User already exists');
-    const u = await c.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1, $2) RETURNING id`, [
-      input.email,
-      input.role,
-    ]);
+    // ON CONFLICT: two concurrent sign-ups with one e-mail get a clean 409, not a 500.
+    const u = await c.query<{ id: string }>(
+      `INSERT INTO users (email, role) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING RETURNING id`,
+      [input.email, input.role],
+    );
+    if (!u.rows[0]) throw conflict('User already exists');
     const userId = u.rows[0]!.id;
-    await c.query(`INSERT INTO api_tokens (user_id, name, token_hash) VALUES ($1, $2, $3)`, [
-      userId,
-      input.tokenName,
-      hashSecret(token),
-    ]);
+    // Public accounts' tokens expire (a stolen token is not good forever); staff tokens
+    // are managed by admins.
+    const ttlDays = input.role === 'member' ? ctx.config.MEMBER_TOKEN_TTL_DAYS : null;
+    await c.query(
+      `INSERT INTO api_tokens (user_id, name, token_hash, expires_at)
+       VALUES ($1, $2, $3, CASE WHEN $4::int IS NULL THEN NULL ELSE now() + make_interval(days => $4::int) END)`,
+      [userId, input.tokenName, hashSecret(token), ttlDays],
+    );
     await grantSignup(c, userId, grantCredits);
     await audit(c, {
       actorType: actorId ? 'user' : 'system',

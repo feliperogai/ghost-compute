@@ -14,7 +14,7 @@ export interface Harness {
 
 export async function setup(overrides: Record<string, string> = {}): Promise<Harness> {
   // Plenty of credits unless a test is about credits.
-  Object.assign(process.env, { CREDITS_INITIAL_GRANT: '1000000' }, overrides);
+  Object.assign(process.env, { CREDITS_INITIAL_GRANT: '1000000', RATE_LIMIT_PER_MINUTE: '1000000' }, overrides);
   const rt = await createRuntime();
   await migrate(rt.db);
   await reset(rt);

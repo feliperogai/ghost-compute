@@ -6,10 +6,12 @@ import type { CreateJobInput } from './schemas.js';
 import { JobLifecycle } from './lifecycle.js';
 import { withTx } from '../db/pool.js';
 import { defaultBudget, holdForJobs } from '../credits/service.js';
+import { MAX_REPLICAS } from './verification.js';
+import { checkActiveJobs } from '../modules/quotas.js';
 
 const JOB_COLS = `j.id, j.owner_id, u.email AS owner_email, j.name, j.type, j.requirements, j.resources, j.status,
   j.priority, j.timeout_seconds, j.max_attempts, j.failures, j.error, j.worker_id, j.progress, j.stage,
-  j.pending_reason, j.output_sha256, j.budget, j.created_at, j.assigned_at, j.started_at, j.finished_at, j.updated_at,
+  j.pending_reason, j.output_sha256, j.budget, j.verification, j.created_at, j.assigned_at, j.started_at, j.finished_at, j.updated_at,
   (SELECT count(*)::int FROM job_assignments a WHERE a.job_id = j.id) AS attempts`;
 
 const iso = (d: Date | null) => d?.toISOString() ?? null;
@@ -34,6 +36,7 @@ function toDto(r: Record<string, any>, full = false) {
     pendingReason: r.pending_reason,
     /** Most the job may cost, credits (null: created before budgets). */
     budget: r.budget === null ? null : Number(r.budget) / 1000,
+    verification: r.verification,
     error: r.error,
     createdAt: iso(r.created_at),
     assignedAt: iso(r.assigned_at),
@@ -63,14 +66,19 @@ export class JobService {
     this.lifecycle = new JobLifecycle(ctx);
   }
 
-  async create(input: CreateJobInput, ownerId: string) {
+  async create(input: CreateJobInput, ownerId: string, role: Role = 'operator') {
     const timeout = input.timeout ?? this.ctx.config.JOB_DEFAULT_TIMEOUT_SECONDS;
-    const budget = input.budget ?? defaultBudget(input.resources, timeout);
+    // Public accounts get verified results unless they opt out explicitly.
+    const verification = input.verification ?? (isStaff(role) ? 'none' : 'replicate');
+    // Room for every replica that may run (unused budget is refunded).
+    const budget = input.budget ?? defaultBudget(input.resources, timeout) * (verification === 'replicate' ? MAX_REPLICAS : 1);
     // Job + credit hold commit together: no credits, no job.
     const { id, created_at } = await withTx(this.ctx.db, async (c) => {
+      await checkActiveJobs(this.ctx, c, ownerId, role, 1);
       const { rows } = await c.query<{ id: string; created_at: Date }>(
-        `INSERT INTO jobs (owner_id, name, type, requirements, resources, priority, timeout_seconds, max_attempts, input, budget)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, created_at`,
+        `INSERT INTO jobs (owner_id, name, type, requirements, resources, priority, timeout_seconds, max_attempts, input, budget,
+                           verification)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id, created_at`,
         [
           ownerId,
           input.name ?? null,
@@ -82,6 +90,7 @@ export class JobService {
           input.maxAttempts,
           JSON.stringify(input.input),
           budget,
+          verification,
         ],
       );
       const row = rows[0]!;
