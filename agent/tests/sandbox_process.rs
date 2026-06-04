@@ -226,3 +226,55 @@ fn unix_confinement_blocks_file_creation() {
     let len = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
     assert_eq!(len, 0);
 }
+
+/// The real sandbox binary confines itself before reading anything: seccomp on Linux,
+/// mitigation policies on Windows. Checked from outside, on the live process.
+#[test]
+fn sandbox_process_confines_itself_before_reading_its_request() {
+    use std::process::{Command, Stdio};
+    let mut child =
+        Command::new(EXE).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let confined = loop {
+        if confined(&child) {
+            break true;
+        }
+        if std::time::Instant::now() > deadline {
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(confined, "sandbox process is not confined");
+}
+
+#[cfg(target_os = "linux")]
+fn confined(child: &std::process::Child) -> bool {
+    let status = std::fs::read_to_string(format!("/proc/{}/status", child.id())).unwrap_or_default();
+    // Seccomp 2 = filter mode; NoNewPrivs 1 = cannot gain privileges through exec.
+    status.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["Seccomp:", "2"])
+        && status.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["NoNewPrivs:", "1"])
+}
+
+#[cfg(windows)]
+fn confined(child: &std::process::Child) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Threading::{
+        GetProcessMitigationPolicy, ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy,
+    };
+    let h = HANDLE(child.as_raw_handle());
+    let read = |policy| {
+        let mut flags: u32 = 0;
+        unsafe { GetProcessMitigationPolicy(h, policy, &mut flags as *mut u32 as *mut core::ffi::c_void, 4) }
+            .map(|_| flags)
+            .unwrap_or(0)
+    };
+    read(ProcessExtensionPointDisablePolicy) & 1 == 1 && read(ProcessImageLoadPolicy) & 0b11 == 0b11
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn confined(_: &std::process::Child) -> bool {
+    true
+}

@@ -348,6 +348,74 @@ pub fn matmul_probe(
 mod tests {
     use super::*;
 
+    /// Reads a GPU buffer back to the CPU (test helper).
+    fn read_back(d: &wgpu::Device, q: &wgpu::Queue, src: &wgpu::Buffer, bytes: u64) -> Vec<u8> {
+        let staging = d.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("t-staging"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_buffer_to_buffer(src, 0, &staging, 0, bytes);
+        q.submit([enc.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        d.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        rx.recv().unwrap().unwrap();
+        let v = staging.slice(..).get_mapped_range().unwrap().to_vec();
+        staging.unmap();
+        v
+    }
+
+    /// GPU memory is not wiped by the hardware between users. A job must never read what
+    /// an earlier job left in VRAM: every buffer we allocate starts zeroed (wgpu's
+    /// zero-initialization), within one device and across devices (each job runs in its
+    /// own sandbox process with its own device).
+    #[test]
+    fn fresh_gpu_buffers_never_expose_earlier_data() {
+        let Ok((d, q, info)) = open_device(true) else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let bytes: u64 = 1 << 20;
+        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+        let secret = vec![0xABu8; bytes as usize];
+        for _ in 0..4 {
+            let b = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("secret"),
+                contents: &secret,
+                usage,
+            });
+            assert!(read_back(&d, &q, &b, bytes).iter().all(|&x| x == 0xAB), "setup: pattern not written");
+            drop(b);
+            d.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let fresh = d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("fresh"),
+                size: bytes,
+                usage,
+                mapped_at_creation: false,
+            });
+            assert!(
+                read_back(&d, &q, &fresh, bytes).iter().all(|&x| x == 0),
+                "fresh buffer exposed old data on {}",
+                info.name
+            );
+        }
+        drop(d);
+        drop(q);
+        let (d2, q2, _) = open_device(true).unwrap();
+        let fresh = d2.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fresh-2"),
+            size: bytes,
+            usage,
+            mapped_at_creation: false,
+        });
+        assert!(read_back(&d2, &q2, &fresh, bytes).iter().all(|&x| x == 0), "new device exposed old data");
+    }
+
     #[test]
     fn probe_checksum_matches_the_control_plane_vector() {
         // Reference on the CPU; the control plane expects -920 for n = 64.
