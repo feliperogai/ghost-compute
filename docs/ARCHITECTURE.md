@@ -345,11 +345,13 @@ Garantias:
 
 ### 10.1 Ameaças e mitigações
 
+Auditoria completa, com risco, impacto, probabilidade, mitigação e teste de cada ameaça: [docs/security/AUDIT.md](security/AUDIT.md).
+
 | Ameaça | Mitigação |
 |---|---|
 | Workload escapar para o host | WASM + AppContainer + Job Object + low integrity. Sem código nativo. Wasmtime atualizado. |
 | Servidor comprometido envia código malicioso | Assinatura offline de módulos verificada no Worker. |
-| Worker malicioso forja resultados | Hash, validação de schema, reputação objetiva por worker ([ADR 008](adr/008-open-platform.md)). **Aberto:** execução redundante / verificação por amostragem ainda não existe; na plataforma aberta um provedor pode devolver resultado errado com hash coerente. |
+| Worker malicioso forja resultados | Verificação por réplica (donos e redes diferentes, desempate, verificador confiável opcional), perdedor sem pagamento e com falha na reputação. Ver [auditoria](security/AUDIT.md) §3. |
 | Worker lê dados sensíveis de inputs | Plataforma aberta: **provedores veem os inputs dos jobs que executam**. Clientes não devem enviar dados sensíveis. Só tipos registrados; imagens só do lote atribuído. |
 | Roubo de credencial do Worker | Chave em TPM, cert 7 dias, revogação imediata. |
 | Token de enrollment vazado | Uso único, TTL curto, aprovação manual opcional. |
@@ -358,7 +360,7 @@ Garantias:
 | Exfiltração pela rede | Sandbox sem rede. Agent só fala com hosts fixos (pinning). |
 | DoS no host | Limites rígidos do Job Object; prioridade IDLE; kill imediato. |
 | Side-channel (Spectre etc.) | Sem timers de alta resolução no WASI; sem threads compartilhadas no MVP. Risco residual: na plataforma aberta, jobs de clientes diferentes podem rodar lado a lado no mesmo computador. |
-| Contas falsas (Sybil) para créditos grátis ou reputação | Cadastro limitado por IP, crédito de boas-vindas pequeno (`SIGNUP_CREDITS`), jobs do próprio dono não contam para reputação. **Aberto:** um provedor com várias contas ainda pode simular clientes. |
+| Contas falsas (Sybil) para créditos grátis ou reputação | Cadastro limitado por IP real (`TRUST_PROXY`), crédito de boas-vindas pequeno, jobs do próprio dono não contam, réplicas de redes diferentes, `REQUIRE_TRUSTED_REPLICA`. Residual em [auditoria](security/AUDIT.md) §3. |
 | Membro vê dados de outros | Papel `member`: só os próprios jobs, computadores e créditos; ids alheios respondem 404; sem WebSocket global nem painel. |
 | Dashboard (XSS/CSRF) | CSP estrita, cookies SameSite, CSRF token, escape padrão do framework. |
 

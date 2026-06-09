@@ -2,10 +2,11 @@
 // (docs/security/AUDIT.md). HTTP-level controls: security-http.test.ts.
 import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { HW, auth, heartbeat, reset, setup, type Harness, type TestWorker } from './helpers.js';
+import { CAPACITY, HW, auth, heartbeat, registerWorker, reset, setup, type Harness, type TestWorker } from './helpers.js';
 import { createUserWithToken } from '../src/modules/admin/service.js';
 import { createEngine } from '../src/jobs/runner.js';
 import { resultsAgree, verdict, CONFIDENCE_TOLERANCE_BP } from '../src/jobs/verification.js';
+import { networkPrefix } from '../src/jobs/network.js';
 
 const sha = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 
@@ -46,6 +47,28 @@ describe('result verification (pure)', () => {
       kind: 'mismatch',
       disagreed: ['a', 'b', 'c'],
     });
+  });
+});
+
+describe('replica diversity (pure)', () => {
+  it('groups addresses by /24 and /48; loopback has no network', () => {
+    expect(networkPrefix('198.51.100.10')).toBe('198.51.100.0/24');
+    expect(networkPrefix('::ffff:198.51.100.200')).toBe('198.51.100.0/24');
+    expect(networkPrefix('2001:db8:abcd:12::1')).toBe('2001:db8:abcd::/48');
+    expect(networkPrefix('2001:db8::1')).toBe('2001:db8:0::/48');
+    expect(networkPrefix('127.0.0.1')).toBeNull();
+    expect(networkPrefix('::1')).toBeNull();
+    expect(networkPrefix('not-an-ip')).toBeNull();
+  });
+
+  it('a trusted replica decides, and can be required', () => {
+    const b = (checksum: string) => ({ kind: 'primes', size: 1, iterations: 1, checksum });
+    const liar = { assignmentId: 'a', ownerId: 'o1', output: b('bad') };
+    const judge = { assignmentId: 't', ownerId: 'staff', output: b('good'), trusted: true };
+    expect(verdict('benchmark', [liar], true)).toEqual({ kind: 'pending' });
+    expect(verdict('benchmark', [liar, judge], true)).toEqual({ kind: 'agreed', winner: 't', agreed: ['t'], disagreed: ['a'] });
+    // Two colluding owners agreeing on a lie are still pending when a trusted replica is required.
+    expect(verdict('benchmark', [liar, { ...liar, assignmentId: 'c', ownerId: 'o2' }], true)).toEqual({ kind: 'pending' });
   });
 });
 
@@ -249,6 +272,62 @@ describe('malicious provider: forged results', () => {
     }
     expect((await getJob(c.token, j.id))).toMatchObject({ status: 'FAILED', error: { code: 'JOB_FAILED' } });
     for (const p of [p0!, p1!]) expect((await reputation(c.token, p.w.id)).metrics.failed).toBe(0);
+  });
+});
+
+describe('colluding providers', () => {
+  const hbFrom = (w: TestWorker, ip: string) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/v1/worker/heartbeat',
+      headers: auth(w.token),
+      remoteAddress: ip,
+      payload: { state: 'available', usage: { cpuPercent: 10, ramUsedMb: 4000, temperatureC: 50 }, capacity: CAPACITY, workloadTypes: ['benchmark'] },
+    });
+
+  it('two accounts behind one connection cannot confirm each other', async () => {
+    const [p0, p1] = await market(2);
+    await hbFrom(p0!.w, '198.51.100.10');
+    await hbFrom(p1!.w, '198.51.100.20');
+    const c = await signup('c@ex.test');
+    const j = (await job(c.token)).json();
+    const engine = createEngine(h.rt);
+    await engine.tick();
+    const first = (await getJob(c.token, j.id)).workerId === p0!.w.id ? p0! : p1!;
+    await answer(first.w, out('00a8'));
+    await hbFrom(first.w, first === p0 ? '198.51.100.10' : '198.51.100.20'); // answer() polled from loopback
+    await engine.tick();
+    expect(await getJob(c.token, j.id)).toMatchObject({ status: 'QUEUED', pendingReason: 'no eligible worker (2× EXCLUDED)' });
+    // From another network it is fine.
+    const other = first === p0 ? p1! : p0!;
+    await hbFrom(other.w, '203.0.113.7');
+    await engine.tick();
+    expect((await getJob(c.token, j.id)).workerId).toBe(other.w.id);
+  });
+
+  it('with REQUIRE_TRUSTED_REPLICA a staff computer verifies, and its answer beats colluders', async () => {
+    h.rt.config.REQUIRE_TRUSTED_REPLICA = true;
+    try {
+      const [p0, p1] = await market(2);
+      const c = await signup('c@ex.test');
+      const j = (await job(c.token)).json();
+      const engine = createEngine(h.rt);
+      await engine.tick();
+      const liar = (await getJob(c.token, j.id)).workerId === p0!.w.id ? p0! : p1!;
+      await answer(liar.w, out('bad0'));
+      await engine.tick();
+      // The accomplice (another account, another network) is not allowed to confirm.
+      expect(await getJob(c.token, j.id)).toMatchObject({ status: 'QUEUED', pendingReason: expect.stringContaining('UNTRUSTED_VERIFIER') });
+      const staff = await registerWorker(h, { name: 'trusted' }); // enrolled by an admin
+      await heartbeat(h, staff);
+      await engine.tick();
+      expect((await getJob(c.token, j.id)).workerId).toBe(staff.id);
+      await answer(staff, out('00a8'));
+      expect(await getJob(c.token, j.id)).toMatchObject({ status: 'COMPLETED', output: out('00a8') });
+      expect(await walletOf(liar.token, liar.w.id)).toBe(0);
+    } finally {
+      h.rt.config.REQUIRE_TRUSTED_REPLICA = false;
+    }
   });
 });
 
