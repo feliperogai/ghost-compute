@@ -262,3 +262,20 @@ details summary { cursor: pointer; color: var(--ink-2); font-weight: 500; paddin
 .unreachable .retry { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink-3); font-size: 13px; }
 .unreachable code { background: var(--well); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
 .banner { display: flex; gap: var(--s2); align-items: center; background: var(--heat-soft); color: var(--heat); border-radius: var(--r-md); padding: var(--s2) var(--s3); margin-bottom: var(--s3); font-size: 13px; }
+
+/* Connect (computer not linked to an account yet) */
+.connect { max-width: 560px; margin: 10vh auto 0; padding: 0 var(--s4); }
+.connect h1 { font: 600 24px/1.2 var(--font-display); letter-spacing: -0.02em; margin: 0 0 var(--s3); }
+.connect .lead { color: var(--ink-2); margin: 0 0 var(--s2); }
+.connect .muted { color: var(--ink-3); font-size: 13px; margin: 0 0 var(--s5); }
+.connect form { display: grid; gap: var(--s2); background: var(--sheet); box-shadow: var(--lift); border-radius: var(--r-lg); padding: var(--s5); }
+.connect label { font-weight: 600; }
+.connect input {
+  border: 1px solid var(--rule-strong); border-radius: var(--r-sm); background: var(--paper);
+  padding: var(--s2) var(--s3); font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+.connect input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.connect .error { color: var(--alarm); margin: 0; }
+.connect .ok-note { color: var(--ghost-ink); font-weight: 600; }
+.connect .help { color: var(--ink-2); font-size: 13px; padding-left: var(--s4); margin: var(--s5) 0 0; display: grid; gap: var(--s2); }
+.connect code { font-size: 12px; }

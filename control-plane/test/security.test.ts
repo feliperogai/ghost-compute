@@ -490,3 +490,20 @@ describe('resource exhaustion by one account', () => {
     }
   });
 });
+
+describe('uninstall', () => {
+  it('a worker can take itself off the platform; its token then stops working', async () => {
+    const [p] = await market(1);
+    const c = await signup('c@ex.test');
+    const j = (await job(c.token, { verification: 'none' })).json();
+    await createEngine(h.rt).tick();
+    const r = await wpost(p!.w, '/v1/worker/me/leave');
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ workerId: p!.w.id, status: 'revoked' });
+    expect((await wpost(p!.w, '/v1/worker/me/leave')).statusCode).toBe(401);
+    expect((await heartbeat(h, p!.w)).statusCode).toBe(401);
+    expect((await getJob(c.token, j.id)).status).toBe('QUEUED');
+    const a = await h.rt.db.query(`SELECT actor_type, action FROM audit_log WHERE target_id = $1 AND action = 'worker.revoke'`, [p!.w.id]);
+    expect(a.rows).toEqual([{ actor_type: 'worker', action: 'worker.revoke' }]);
+  });
+});

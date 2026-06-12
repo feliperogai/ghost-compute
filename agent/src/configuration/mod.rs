@@ -298,6 +298,64 @@ pub fn default_config_path() -> PathBuf {
     default_data_dir().join("agent.toml")
 }
 
+/// Written by the installer on a fresh install. Limits are conservative and editable in
+/// the desktop app (stored separately, in limits.json).
+const TEMPLATE: &str = r#"# ghost Worker — configuração deste computador.
+# Escrito pelo instalador. Os limites abaixo são os padrões; mude-os no app ghost
+# (Configurações), que tem prioridade sobre este arquivo.
+
+[server]
+url = "{URL}"
+allow_insecure_localhost = {INSECURE}
+request_timeout_secs = 15
+
+[agent]
+max_concurrent_tasks = 1
+sample_interval_secs = 2
+log_level = "info"
+
+[limits]
+enabled = true
+max_cpu_percent = 25            # no máximo 25% do processador para o ghost
+max_ram_mb = 2048               # no máximo 2 GB de memória
+max_gpu_percent = 0             # a placa de vídeo NÃO é usada até você permitir
+max_temperature_c = 85          # para se passar de 85 °C
+user_cpu_threshold_percent = 30 # você usando mais de 30% do processador → o ghost cede
+user_ram_threshold_percent = 80
+require_idle_secs = 300         # só depois de 5 min sem teclado/mouse
+resume_after_secs = 60
+pause_on_battery = true         # nunca na bateria
+only_when_locked = false
+pause_during_games = true       # cede para jogos e apresentações em tela cheia
+priority_apps = []
+"#;
+
+/// Creates agent.toml, or changes only the server address of an existing one (upgrades
+/// keep the owner's configuration). Validates before writing.
+pub fn write_server_url(path: &Path, url: &str, allow_insecure_localhost: bool) -> Result<Config, ConfigError> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(existing) => {
+            let mut cfg = Config::parse(&existing)?;
+            cfg.server.url = url.to_string();
+            cfg.server.allow_insecure_localhost = allow_insecure_localhost;
+            toml::to_string_pretty(&cfg).map_err(|e| ConfigError::Invalid(e.to_string()))?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if url.contains('"') || url.contains('\\') || url.chars().any(char::is_control) {
+                return Err(ConfigError::Invalid("server.url contains invalid characters".into()));
+            }
+            TEMPLATE
+                .replace("{URL}", url)
+                .replace("{INSECURE}", if allow_insecure_localhost { "true" } else { "false" })
+        }
+        Err(source) => return Err(ConfigError::Read { path: path.into(), source }),
+    };
+    let cfg = Config::parse(&raw)?;
+    crate::security::credentials::write_private(path, raw.as_bytes())
+        .map_err(|source| ConfigError::Read { path: path.into(), source })?;
+    Ok(cfg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
