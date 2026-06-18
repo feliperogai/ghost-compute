@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ghost-worker-setup.exe: installs what the Worker needs, then the Worker.
+
+  Dependencies:
+  - Microsoft Edge WebView2 Runtime (the ghost app's window). Present on Windows 11 and
+    updated Windows 10; installed only when missing. The bootstrapper is Microsoft's,
+    its signature is checked when the bundle is built (build.ps1).
+  - Nothing else: the agent links the C runtime statically; GPU work uses Direct3D 12,
+    part of Windows.
+
+  The Worker's own pages (how it works, connect, options) are shown by its MSI.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Bundle Name="ghost Worker"
+          Manufacturer="ghost"
+          Version="$(Version)"
+          UpgradeCode="E1D61C20-A271-4038-AEB4-7778E38AC5FD"
+          IconSourceFile="$(IconFile)"
+          Compressed="yes">
+
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" LicenseUrl="" SuppressOptionsUI="yes" SuppressRepair="yes" ShowVersion="yes" />
+    </BootstrapperApplication>
+
+    <!-- WebView2 is installed per machine (x64 registry view) or per user. -->
+    <util:RegistrySearch Id="WebView2Machine" Root="HKLM"
+                         Key="SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+                         Value="pv" Variable="WebView2MachineVersion" />
+    <util:RegistrySearch Id="WebView2User" Root="HKCU"
+                         Key="Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+                         Value="pv" Variable="WebView2UserVersion" />
+
+    <Chain>
+      <ExePackage Id="WebView2Runtime"
+                  DisplayName="Microsoft Edge WebView2 Runtime"
+                  SourceFile="$(WebView2Bootstrapper)"
+                  InstallArguments="/silent /install"
+                  Permanent="yes"
+                  Vital="yes"
+                  PerMachine="yes"
+                  DetectCondition="(WebView2MachineVersion AND WebView2MachineVersion &lt;&gt; &quot;0.0.0.0&quot;) OR (WebView2UserVersion AND WebView2UserVersion &lt;&gt; &quot;0.0.0.0&quot;)" />
+      <MsiPackage Id="GhostWorker" SourceFile="$(MsiFile)" Vital="yes" bal:DisplayInternalUICondition="1" />
+    </Chain>
+  </Bundle>
+</Wix>
