@@ -6,7 +6,8 @@ applies the owner's limits and talks to the control plane over HTTPS.
 **Done:** hardware detection, monitoring, heartbeat, secure communication, local IPC
 for the desktop app, and **isolated execution** of registered workloads (see
 [ADR 003](../docs/adr/003-isolated-execution.md)).
-**Next:** AppContainer for the sandbox process, Windows service mode, self-update.
+Also done: Windows service mode and the installer ([installer/windows](../installer/windows/README.md)).
+**Next:** AppContainer for the sandbox process, self-update.
 
 ## Execution
 
@@ -26,8 +27,11 @@ declines any offer, so no task is ever held by it.
 ```powershell
 ghost-agent hardware                      # inventory as JSON
 ghost-agent sample --count 5              # live samples as JSON lines
-ghost-agent --config agent.toml enroll    # reads the ghe_ token from stdin
-ghost-agent --config agent.toml run
+ghost-agent --config agent.toml enroll    # ghe_ code or ghu_ account token, from stdin
+ghost-agent --config agent.toml run       # console; Ctrl+C stops
+ghost-agent service                       # as the Windows service GhostWorker (installer)
+ghost-agent --config agent.toml configure --server-url https://…   # installer: writes agent.toml
+ghost-agent --config agent.toml uninstall-cleanup                   # uninstaller: leave + delete data
 ghost-agent --config agent.toml status        # what the desktop app sees (JSON)
 ghost-agent --config agent.toml control start # start | pause | stop
 ```
@@ -37,7 +41,10 @@ The choice (`control.json`) and limits edited in the desktop app (`limits.json`)
 
 Config: see [`agent.example.toml`](agent.example.toml). Default path `%ProgramData%\ghost\agent.toml`.
 
-Exit codes of `run`: `0` shutdown · `2` credentials rejected (re-enroll) · `3` worker revoked (credentials deleted).
+`run` and `service` behave the same:
+- **Not connected yet:** the agent waits. The local IPC answers only `hello` and `enroll` (desktop app "Conectar"); everything else returns `NOT_ENROLLED`.
+- **Installer code:** a code left by the installer in `enroll.ini` is used once and deleted.
+- **Revoked or rejected credentials:** the credentials are deleted, and the agent goes back to waiting instead of exiting.
 
 ## Modules
 
@@ -86,5 +93,5 @@ Windows: CI runs the suite on `windows-latest`. Locally the crate cross-compiles
 ## Known limits
 
 - **CPU temperature** on Windows comes from WMI thermal zones (via sysinfo), which many desktops do not expose. It is then `None` and the temperature rule is skipped. GPU temperature needs NVML/ADLX (planned).
-- **Idle time** from a service in session 0 is not the user's. The tray app will report it over IPC. Until then an unknown idle time does not block sharing.
+- **Idle time:** a service in session 0 cannot see the user's input, so it treats idle time as unknown. The tray app reports it over IPC. While nobody reports it, sharing waits (`presence_unknown`); it never assumes the owner is away.
 - GPU utilisation relies on the `GPU Engine` performance counters (Windows 10 1709+).
