@@ -84,7 +84,7 @@ if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Micr
 $setup = Join-Path $OutDir "ghost-worker-setup-$Version.exe"
 wix build -arch x64 `
   -ext $balExt.FullName -ext WixToolset.Util.wixext `
-  -d "Version=$Version" -d "IconFile=$IconFile" -d "MsiFile=$msi" -d "WebView2Bootstrapper=$wv2" `
+  -d "Version=$Version" -d "IconFile=$IconFile" -d "MsiFile=$msi" -d "WebView2Bootstrapper=$wv2" -d "HowItWorksRtf=$rtf" `
   -intermediatefolder (Join-Path $obj 'bundle') `
   (Join-Path $here 'Bundle.wxs') -o $setup
 if ($LASTEXITCODE) { throw 'bundle build failed' }
