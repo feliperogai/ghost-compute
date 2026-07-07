@@ -49,6 +49,111 @@ curl $API/v1/inference/$RUN            # status e progresso
 curl $API/v1/inference/$RUN/result     # rótulo, confiança e top-k por imagem
 ```
 
+## Instalar um Worker no Windows (passo a passo)
+
+Resumo: servidor no ar com HTTPS → código de conexão → instalador no PC → conferir → ligar o compartilhamento.
+Detalhes do instalador (propriedades, modo silencioso, build): [installer/windows/README.md](installer/windows/README.md).
+
+### 1. Servidor (control plane) no ar, com HTTPS
+
+O Worker só conversa com `https://`. Sem isso o instalador recusa o endereço.
+
+```bash
+cd control-plane
+export WORKER_TOKEN_SECRET=$(openssl rand -hex 32)   # guarde: trocar derruba os workers
+docker compose up -d --build                        # Postgres + Redis + API na porta 8080
+docker compose exec control-plane node dist/src/cli/create-admin.js voce@exemplo.com
+# → "api token (shown once): ghu_..."  guarde este token
+```
+
+Coloque um proxy HTTPS na frente da porta 8080 (ex.: Caddy: `ghost.seudominio.com { reverse_proxy localhost:8080 }`).
+Com proxy (um salto): `TRUST_PROXY=1 REQUIRE_TLS=true docker compose up -d`.
+
+Teste: `curl https://ghost.seudominio.com/healthz` → `{"status":"ok"}`.
+
+### 2. Código de conexão do computador
+
+Uso único, vale 1 hora por padrão. Um por computador.
+
+```bash
+curl -X POST https://ghost.seudominio.com/v1/provider/enrollment-tokens \
+  -H "authorization: Bearer ghu_..." -H 'content-type: application/json' -d '{"note":"PC da sala"}'
+# → {"token":"ghe_...", "expiresAt": ...}
+```
+
+Pode pular: depois dá para conectar pelo app, colando o `ghu_...` (usado uma vez, nunca guardado).
+
+### 3. Baixar o instalador
+
+GitHub → **Actions** → workflow **installer** → última execução verde em `main` → artefato **ghost-worker-installer**:
+
+- `ghost-worker-setup-<versão>.exe`: para usar em casa. Instala o WebView2 se faltar.
+- `ghost-worker-<versão>.msi`: para TI e instalação silenciosa.
+
+Sem assinatura digital ainda: o SmartScreen avisa. Clique em *Mais informações › Executar assim mesmo*.
+
+### 4. Instalar
+
+Execute o `setup.exe` (pede administrador). Telas:
+
+1. **Como o ghost funciona**: recursos usados, quando roda, como pausar e remover. Marque *Li e entendi*.
+2. **Conectar**: endereço `https://ghost.seudominio.com` e o código `ghe_...` (opcional).
+3. Opções: app ao iniciar o Windows (**deixe marcado**: sem ele o Worker não sabe se você está usando o PC e não compartilha), atalho, regra de firewall.
+4. Concluir. O compartilhamento começa **desligado**.
+
+### 5. Conferir se está funcionando
+
+Abra o **PowerShell como administrador**:
+
+| Verificação | Comando | Esperado |
+|---|---|---|
+| Serviço rodando | `Get-Service GhostWorker` | `Running` |
+| Conta do serviço | `(Get-CimInstance Win32_Service -Filter "Name='GhostWorker'").StartName` | `NT SERVICE\GhostWorker` |
+| Agente responde | `& "$env:ProgramFiles\ghost\ghost-agent.exe" status` | JSON com `workerId`. `NOT_ENROLLED` = ainda não conectado (passo 6) |
+| Código consumido | `Test-Path $env:ProgramData\ghost\enroll.ini` | `False` |
+| Configuração | `Get-Content $env:ProgramData\ghost\agent.toml` | `url = "https://ghost.seudominio.com"` |
+| Firewall | `Get-NetFirewallRule -DisplayName 'ghost Worker: sandbox sem rede'` | Outbound, Block. Nenhuma porta aberta |
+| Logs | `Get-ChildItem $env:ProgramData\ghost\logs` | Arquivos do dia |
+
+No servidor, o computador aparece na sua conta:
+
+```bash
+curl https://ghost.seudominio.com/v1/provider/workers -H "authorization: Bearer ghu_..."
+# → items[].status = "active"; state muda de "offline" para "stopped" / "waiting" / "available"
+```
+
+No PC: ícone do **ghost** perto do relógio. Abra o painel.
+
+### 6. Conectar pelo app (se não usou código na instalação)
+
+Painel → tela **Conectar** → cole `ghe_...` ou `ghu_...`. Conectar **não** liga o compartilhamento.
+
+### 7. Ligar, pausar, parar
+
+- Painel: **Iniciar compartilhamento**, **Pausar**, **Parar**. Efeito imediato.
+- Terminal (admin): `& "$env:ProgramFiles\ghost\ghost-agent.exe" control start` (ou `pause`, `stop`).
+- Limites (CPU, RAM, GPU, horários, ociosidade): painel › Configurações. A GPU vem **desligada** (`max_gpu_percent = 0`).
+
+Estado "Aguardando" é normal: o Worker espera o PC ficar ocioso, dentro dos seus horários e limites.
+
+### 8. Problemas comuns
+
+| Sintoma | Causa provável | O que fazer |
+|---|---|---|
+| Instalador: "O endereço do servidor precisa começar com https://" | URL `http://` | Use HTTPS (passo 1). |
+| `status` → `NOT_ENROLLED` e "inválido" | Código expirado ou já usado | Gere outro (passo 2) e conecte pelo app. |
+| `status` → erro de conexão com o agente | Serviço parado | `Start-Service GhostWorker`; veja os logs. |
+| Painel: "Não dá para saber se você está usando o computador" | App não está aberto na sessão | Abra o ghost (menu Iniciar). Ative o início com o Windows. |
+| Computador `offline` no servidor | Rede, proxy ou certificado | Nos logs: erros de TLS/DNS. Teste `curl https://.../healthz` no próprio PC. |
+| "Credenciais recusadas" / "removido da rede" | Computador revogado | Gere um código novo e conecte de novo. |
+
+### 9. Remover
+
+*Configurações › Aplicativos › ghost › Desinstalar* (ou menu Iniciar › *Desinstalar ghost*).
+Avisa o servidor, remove serviço, arquivos, `C:\ProgramData\ghost`, regra de firewall, atalhos e registro.
+
+Conferir: `Get-Service GhostWorker` dá erro; `Test-Path "$env:ProgramFiles\ghost", "$env:ProgramData\ghost"` → `False False`.
+
 ## Rodando localmente
 
 ```bash
