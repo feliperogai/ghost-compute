@@ -79,7 +79,9 @@ pub async fn enroll(cfg: &Config, token: &str, force: bool) -> Result<Uuid, Enro
     };
 
     let identity = DeviceIdentity::load_or_create(&data_dir).map_err(|e| EnrollError::Local(e.to_string()))?;
-    let hw = hardware::detect();
+    // Detection can take seconds (GPU adapters, WMI); keep it off the async workers so the
+    // local IPC endpoint keeps answering meanwhile.
+    let hw = tokio::task::spawn_blocking(hardware::detect).await.map_err(|e| EnrollError::Local(e.to_string()))?;
     let res = client
         .register(&RegisterRequest {
             enrollment_token: enrollment.expose(),
@@ -104,6 +106,28 @@ pub async fn enroll(cfg: &Config, token: &str, force: bool) -> Result<Uuid, Enro
 
 pub fn pending_token_path(data_dir: &Path) -> PathBuf {
     data_dir.join("enroll.ini")
+}
+
+/// Leaves a connection code for the service to use once on its next start (installer).
+/// Only one-time codes are accepted here: an account token must never reach the disk.
+pub fn save_pending_token(data_dir: &Path, token: &str) -> Result<(), EnrollError> {
+    let token = token.trim();
+    let valid = token.len() <= 256
+        && token
+            .strip_prefix("ghe_")
+            .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
+    if !valid {
+        return Err(EnrollError::Local("o código de conexão deve começar com ghe_".into()));
+    }
+    std::fs::create_dir_all(data_dir).map_err(|e| EnrollError::Local(e.to_string()))?;
+    let path = pending_token_path(data_dir);
+    let body = zeroize::Zeroizing::new(format!("[enroll]\r\ntoken={token}\r\n"));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    let mut f = opts.open(&path).map_err(|e| EnrollError::Local(e.to_string()))?;
+    std::io::Write::write_all(&mut f, body.as_bytes()).map_err(|e| EnrollError::Local(e.to_string()))
 }
 
 /// Reads and deletes the token the installer left, if any. The file is removed even when
@@ -135,5 +159,16 @@ mod tests {
         std::fs::write(pending_token_path(d.path()), "garbage").unwrap();
         assert!(take_pending_token(d.path()).is_none());
         assert!(!pending_token_path(d.path()).exists(), "malformed files are deleted too");
+    }
+
+    #[test]
+    fn only_connection_codes_are_saved_for_the_service() {
+        let d = tempfile::tempdir().unwrap();
+        save_pending_token(d.path(), " ghe_Abc-123_x ").unwrap();
+        assert_eq!(take_pending_token(d.path()).unwrap().expose(), "ghe_Abc-123_x");
+        for bad in ["ghu_account", "ghe_", "ghe_a b", "ghe_a\r\ntoken=x", "senha"] {
+            assert!(save_pending_token(d.path(), bad).is_err(), "{bad:?}");
+            assert!(!pending_token_path(d.path()).exists());
+        }
     }
 }

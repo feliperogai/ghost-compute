@@ -57,6 +57,9 @@ enum Cmd {
         #[arg(long)]
         allow_insecure_localhost: bool,
     },
+    /// Leave a one-time connection code for the service's next start (used by the installer;
+    /// the service reads it once and deletes it).
+    SaveConnectionCode { code: String },
     /// Leave the platform and delete all local data (used by the uninstaller).
     UninstallCleanup {
         /// Keep credentials and settings (upgrades).
@@ -141,6 +144,12 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
         Cmd::Service => unreachable!("handled before the runtime starts"),
         Cmd::Configure { server_url, allow_insecure_localhost } => {
             configure(cli.config, server_url, allow_insecure_localhost)
+        }
+        Cmd::SaveConnectionCode { code } => {
+            let cfg = load_config(cli.config)?;
+            ghost_agent::enrollment::save_pending_token(&cfg.data_dir(), &code)?;
+            println!("connection code saved for the service");
+            Ok(ExitCode::SUCCESS)
         }
         Cmd::UninstallCleanup { keep_data } => uninstall_cleanup(cli.config, keep_data).await,
     }

@@ -98,7 +98,7 @@ async fn run_enrolled(cfg: &Config, hub: &Arc<Hub>, shutdown: watch::Receiver<bo
         anyhow::bail!("credentials were issued by {} but config points to {}", creds.server_url, cfg.server.url);
     }
     let identity = DeviceIdentity::load_or_create(&data_dir)?;
-    let hw = hardware::detect();
+    let hw = tokio::task::spawn_blocking(hardware::detect).await?;
     info!(
         version = AGENT_VERSION,
         worker_id = %creds.worker_id,
