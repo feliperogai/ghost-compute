@@ -3,9 +3,11 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ghost
-      POSTGRES_PASSWORD: ghost
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ghost}
       POSTGRES_DB: ghost
-    ports: ["5432:5432"]
+    # Loopback only: reachable for local development, never from the network.
+    # Docker publishes ports past host firewalls (ufw), so 0.0.0.0 would expose the database.
+    ports: ["127.0.0.1:5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ghost"]
@@ -15,7 +17,8 @@ services:
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
-    ports: ["6379:6379"]
+    # Loopback only (Redis has no password here).
+    ports: ["127.0.0.1:6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -31,7 +34,7 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
     environment:
-      DATABASE_URL: postgres://ghost:ghost@postgres:5432/ghost
+      DATABASE_URL: postgres://ghost:${POSTGRES_PASSWORD:-ghost}@postgres:5432/ghost
       REDIS_URL: redis://redis:6379/0
       WORKER_TOKEN_SECRET: ${WORKER_TOKEN_SECRET:?set WORKER_TOKEN_SECRET (min 32 chars)}
       LOG_LEVEL: info

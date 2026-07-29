@@ -61,6 +61,7 @@ O Worker só conversa com `https://`. Sem isso o instalador recusa o endereço.
 ```bash
 cd control-plane
 export WORKER_TOKEN_SECRET=$(openssl rand -hex 32)   # guarde: trocar derruba os workers
+export POSTGRES_PASSWORD=$(openssl rand -hex 16)     # guarde: vale só na criação do banco
 docker compose up -d --build                        # Postgres + Redis + API na porta 8080
 docker compose exec control-plane node dist/src/cli/create-admin.js voce@exemplo.com
 # → "api token (shown once): ghu_..."  guarde este token
@@ -70,6 +71,8 @@ Coloque um proxy HTTPS na frente da porta 8080 (ex.: Caddy: `ghost.seudominio.co
 Com proxy (um salto): `TRUST_PROXY=1 REQUIRE_TLS=true docker compose up -d`.
 
 Teste: `curl https://ghost.seudominio.com/healthz` → `{"status":"ok"}`.
+
+Postgres e Redis só aceitam conexões do próprio servidor (`127.0.0.1`). Para acessá-los de fora, use um túnel SSH.
 
 ### 2. Código de conexão do computador
 
