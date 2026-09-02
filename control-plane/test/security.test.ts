@@ -435,6 +435,21 @@ describe('worker compromise and credential theft', () => {
     await h.rt.db.query(`UPDATE api_tokens SET expires_at = now() - interval '1 second' WHERE user_id = $1`, [b.userId]);
     expect((await req('GET', '/v1/me', b.token)).statusCode).toBe(401);
   });
+
+  it('staff tokens expire too (STAFF_TOKEN_TTL_DAYS) and are rotated the same way', async () => {
+    const daysLeft = (iso: string) => (Date.parse(iso) - Date.now()) / 86_400_000;
+    const [admin] = (await req('GET', '/v1/me/tokens', h.adminToken)).json().items;
+    expect(daysLeft(admin.expiresAt)).toBeGreaterThan(89);
+    expect(daysLeft(admin.expiresAt)).toBeLessThanOrEqual(90);
+
+    const op = (await req('POST', '/v1/admin/users', h.adminToken, { email: 'op@ghost.test', role: 'operator' })).json();
+    expect(daysLeft(op.expiresAt)).toBeLessThanOrEqual(90);
+    const next = (await req('POST', '/v1/me/tokens', op.token, { name: 'next', ttlDays: 365 })).json();
+    expect(daysLeft(next.expiresAt)).toBeLessThanOrEqual(90); // capped
+
+    await h.rt.db.query(`UPDATE api_tokens SET expires_at = now() - interval '1 second' WHERE id = $1`, [admin.id]);
+    expect((await req('GET', '/v1/me', h.adminToken)).statusCode).toBe(401);
+  });
 });
 
 describe('replay attacks', () => {

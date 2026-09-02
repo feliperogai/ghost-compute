@@ -65,6 +65,7 @@ export POSTGRES_PASSWORD=$(openssl rand -hex 16)     # guarde: vale só na cria�
 docker compose up -d --build                        # Postgres + Redis + API na porta 8080
 docker compose exec control-plane node dist/src/cli/create-admin.js voce@exemplo.com
 # → "api token (shown once): ghu_..."  guarde este token
+# → "expires: ..."  vale 90 dias (STAFF_TOKEN_TTL_DAYS); antes disso, crie o próximo com POST /v1/me/tokens
 ```
 
 Coloque um proxy HTTPS na frente da porta 8080 (ex.: Caddy: `ghost.seudominio.com { reverse_proxy localhost:8080 }`).
