@@ -360,7 +360,7 @@ Auditoria completa, com risco, impacto, probabilidade, mitigação e teste de ca
 | Exfiltração pela rede | Sandbox sem rede. Agent só fala com hosts fixos (pinning). |
 | DoS no host | Limites rígidos do Job Object; prioridade IDLE; kill imediato. |
 | Side-channel (Spectre etc.) | Sem timers de alta resolução no WASI; sem threads compartilhadas no MVP. Risco residual: na plataforma aberta, jobs de clientes diferentes podem rodar lado a lado no mesmo computador. |
-| Contas falsas (Sybil) para créditos grátis ou reputação | Cadastro limitado por IP real (`TRUST_PROXY`), crédito de boas-vindas pequeno, jobs do próprio dono não contam, réplicas de redes diferentes, `REQUIRE_TRUSTED_REPLICA`. Residual em [auditoria](security/AUDIT.md) §3. |
+| Contas falsas (Sybil) para créditos grátis ou reputação | Cadastro limitado por IP real (`TRUST_PROXY`), crédito de boas-vindas pequeno, jobs do próprio dono não contam, réplicas de redes diferentes, verificação aleatória por computadores da equipe (`TRUSTED_SPOT_CHECK_PERCENT`), `REQUIRE_TRUSTED_REPLICA`. Residual em [auditoria](security/AUDIT.md) §3. |
 | Membro vê dados de outros | Papel `member`: só os próprios jobs, computadores e créditos; ids alheios respondem 404; sem WebSocket global nem painel. |
 | Dashboard (XSS/CSRF) | CSP estrita, cookies SameSite, CSRF token, escape padrão do framework. |
 

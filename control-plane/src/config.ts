@@ -78,6 +78,13 @@ export const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  /**
+   * Spot checks: share of verified jobs (percent) whose verification replica runs on a
+   * trusted computer, whose result decides. Drawn per job; only while one is online.
+   */
+  TRUSTED_SPOT_CHECK_PERCENT: z.coerce.number().min(0).max(100).default(10),
+  /** A spot-checked job waits at most this long for a trusted computer, then is verified as usual. */
+  TRUSTED_SPOT_CHECK_WAIT_SECONDS: z.coerce.number().int().min(0).max(86_400).default(600),
   MAX_BODY_BYTES: z.coerce.number().int().min(1024).default(1_048_576),
 });
 

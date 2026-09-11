@@ -37,7 +37,9 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
                          'owners', COALESCE(jsonb_agg(DISTINCT w.owner_user_id) FILTER (WHERE w.owner_user_id IS NOT NULL), '[]'),
                          'ips', COALESCE(jsonb_agg(DISTINCT w.last_ip) FILTER (WHERE w.last_ip IS NOT NULL), '[]'),
                          'count', count(*),
-                         'trusted', COALESCE(bool_or(u.role IN ('admin', 'operator')), false))
+                         'trusted', COALESCE(bool_or(u.role IN ('admin', 'operator')), false),
+                         -- Spot-checked, and still within the wait for a trusted computer.
+                         'spotCheck', j.trusted_check AND COALESCE(min(r.finished_at) > now() - make_interval(secs => $3), false))
                   FROM job_assignments r JOIN workers w ON w.id = r.worker_id LEFT JOIN users u ON u.id = w.owner_user_id
                  WHERE r.job_id = j.id AND r.status = 'completed') END AS replicas,
               CASE WHEN j.type = 'image-inference' THEN jsonb_build_object(
@@ -53,7 +55,7 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
          ) x ON true
         WHERE j.id = ANY($1::uuid[]) AND j.status = 'QUEUED'
         ORDER BY j.priority DESC, j.created_at, j.id`,
-      [ids, SHORT_EXCLUSION_SECONDS],
+      [ids, SHORT_EXCLUSION_SECONDS, this.ctx.config.TRUSTED_SPOT_CHECK_WAIT_SECONDS],
     );
     // Stale index entries (job no longer queued) are dropped here.
     const found = new Set(rows.map((r) => r.id));
@@ -131,11 +133,14 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
   }
 
   /** Where the next replica of a verified job may run. */
-  private replicaConstraints(r: { owners: string[]; ips: string[]; count: number; trusted: boolean }) {
+  private replicaConstraints(r: { owners: string[]; ips: string[]; count: number; trusted: boolean; spotCheck: boolean }) {
+    // A replica exists and no trusted computer has answered yet.
+    const unjudged = r.count > 0 && !r.trusted;
     return {
       excludedOwners: r.owners,
       excludedNetworks: r.ips.map(networkPrefix).filter((n): n is string => n !== null),
-      needsTrusted: this.ctx.config.REQUIRE_TRUSTED_REPLICA && r.count > 0 && !r.trusted,
+      needsTrusted: this.ctx.config.REQUIRE_TRUSTED_REPLICA && unjudged,
+      trustedCheck: r.spotCheck === true && unjudged,
     };
   }
 

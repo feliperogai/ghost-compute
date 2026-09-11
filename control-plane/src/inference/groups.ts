@@ -6,6 +6,7 @@ import { AppError, conflict, notFound } from '../errors.js';
 import { audit } from '../audit.js';
 import { defaultBudget, holdForJobs } from '../credits/service.js';
 import { MAX_REPLICAS } from '../jobs/verification.js';
+import { drawSpotCheck } from '../jobs/spot-check.js';
 import { isStaff } from '../auth/plugin.js';
 import { checkActiveJobs } from '../modules/quotas.js';
 import { combine, type BatchRow } from './aggregate.js';
@@ -87,6 +88,7 @@ export class InferenceService {
       const rows = batches.map((b, i) => ({
         name: `${input.name ?? 'inference'} · batch ${i + 1}/${batches.length}`,
         batch_index: i,
+        trusted_check: verification === 'replicate' && drawSpotCheck(this.ctx.config.TRUSTED_SPOT_CHECK_PERCENT),
         input: {
           images: b.map((x) => ({ index: x.idx, sha256: x.sha256, size: x.size })),
           accelerator: input.accelerator,
@@ -95,9 +97,9 @@ export class InferenceService {
       }));
       const created = await c.query<{ id: string; created_at: Date }>(
         `INSERT INTO jobs (owner_id, name, type, requirements, resources, priority, timeout_seconds, max_attempts,
-                           input, group_id, batch_index, retry_on_timeout, budget, verification)
-         SELECT $1, r.name, 'image-inference', $2, $3, $4, $5, $6, r.input, $7, r.batch_index, $10::text = 'none', $9, $10
-           FROM jsonb_to_recordset($8::jsonb) AS r(name text, batch_index int, input jsonb)
+                           input, group_id, batch_index, retry_on_timeout, budget, verification, trusted_check)
+         SELECT $1, r.name, 'image-inference', $2, $3, $4, $5, $6, r.input, $7, r.batch_index, $10::text = 'none', $9, $10, r.trusted_check
+           FROM jsonb_to_recordset($8::jsonb) AS r(name text, batch_index int, input jsonb, trusted_check boolean)
          RETURNING id, created_at`,
         [actor.userId, requirements, resources, input.priority, input.timeoutSeconds, input.maxAttempts, g.id, JSON.stringify(rows), budget, verification],
       );

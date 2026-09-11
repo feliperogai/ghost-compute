@@ -53,6 +53,11 @@ export interface JobSpec {
   excludedNetworks?: string[];
   /** The next replica must run on a trusted (staff-owned) computer. */
   needsTrusted?: boolean;
+  /**
+   * Spot check: the next replica runs on a trusted computer while one is online to take it
+   * (EligibilityOptions.trustedOnline); with none online, verification proceeds as usual.
+   */
+  trustedCheck?: boolean;
 }
 
 export interface WorkSize {

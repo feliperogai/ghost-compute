@@ -7,6 +7,7 @@ import { JobLifecycle } from './lifecycle.js';
 import { withTx } from '../db/pool.js';
 import { defaultBudget, holdForJobs } from '../credits/service.js';
 import { MAX_REPLICAS } from './verification.js';
+import { drawSpotCheck } from './spot-check.js';
 import { checkActiveJobs } from '../modules/quotas.js';
 
 const JOB_COLS = `j.id, j.owner_id, u.email AS owner_email, j.name, j.type, j.requirements, j.resources, j.status,
@@ -77,8 +78,8 @@ export class JobService {
       await checkActiveJobs(this.ctx, c, ownerId, role, 1);
       const { rows } = await c.query<{ id: string; created_at: Date }>(
         `INSERT INTO jobs (owner_id, name, type, requirements, resources, priority, timeout_seconds, max_attempts, input, budget,
-                           verification)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id, created_at`,
+                           verification, trusted_check)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id, created_at`,
         [
           ownerId,
           input.name ?? null,
@@ -91,6 +92,7 @@ export class JobService {
           JSON.stringify(input.input),
           budget,
           verification,
+          verification === 'replicate' && drawSpotCheck(this.ctx.config.TRUSTED_SPOT_CHECK_PERCENT),
         ],
       );
       const row = rows[0]!;

@@ -81,6 +81,7 @@ Rate limit global por credencial (ou IP) em toda a API, `RATE_LIMIT_PER_MINUTE`;
 | POST · DELETE | `/v1/me/tokens` · `/v1/me/tokens/:id` | member | criar token (validade máxima `MEMBER_TOKEN_TTL_DAYS`; equipe: `STAFF_TOKEN_TTL_DAYS`) · revogar |
 | POST | `/v1/admin/users` | admin | cria usuário + token |
 | POST | `/v1/admin/enrollment-tokens` | admin | token de registro de Worker |
+| GET | `/v1/admin/audit` | admin | log de auditoria, mais recente primeiro (`action`, `targetId`, `limit`); `action=verification.contradicted` lista computadores pegos por um computador da equipe |
 | POST | `/v1/workers/register` | enrollment token | 1. registrar Worker |
 | POST | `/v1/workers/auth` | secret do worker | 2. autenticar Worker |
 | POST | `/v1/workers/:id/revoke` | admin | 3. revogar Worker |
@@ -146,7 +147,7 @@ Códigos de fechamento: 4001 não autorizado · 4003 revogado · 4008 timeout de
 
 ## Logs
 
-JSON (pino) com `reqId` (aceita `x-request-id`), `userId`/`workerId` após auth, `service`. Header `authorization` e campos de segredo são redigidos. Ações administrativas vão para `audit_log`.
+JSON (pino) com `reqId` (aceita `x-request-id`), `userId`/`workerId` após auth, `service`. Header `authorization` e campos de segredo são redigidos. Ações administrativas e resultados contraditos por um computador da equipe vão para `audit_log` (`GET /v1/admin/audit`).
 
 ## Fora do escopo (ainda)
 

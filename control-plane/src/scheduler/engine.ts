@@ -1,5 +1,5 @@
 // One scheduling pass: monitor what is running, then place what is queued.
-import { describeUnplaced, ineligibility, reserve, type EligibilityOptions } from './eligibility.js';
+import { describeUnplaced, ineligibility, reserve, trustedOnline, type EligibilityOptions } from './eligibility.js';
 import type { SchedulerMonitors, SchedulerStore } from './ports.js';
 import type { PlacementStrategy } from './strategy.js';
 import type { JobSpec, WorkerSnapshot } from './types.js';
@@ -74,6 +74,7 @@ export class SchedulerEngine {
         offlineAfterMs: this.opts.offlineAfterMs,
         thermalMarginC: this.opts.thermalMarginC,
       };
+      eo.trustedOnline = trustedOnline(workers, eo);
       const result = this.strategy.place(jobs, workers, eo);
       const byJob = new Map<string, JobSpec>(jobs.map((j) => [j.id, j]));
       const pool = new Map<string, WorkerSnapshot>(workers.map((w) => [w.id, w]));
