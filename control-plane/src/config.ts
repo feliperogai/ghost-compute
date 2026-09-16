@@ -64,6 +64,14 @@ export const envSchema = z.object({
   MEMBER_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   /** Lifetime of staff tokens (admin, operator, viewer); they mint the next one before it ends. */
   STAFF_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(90),
+  /**
+   * Staff accounts must turn on two-step verification (TOTP) before using anything but
+   * their own account page. Public accounts may turn it on; it is optional for them.
+   */
+  REQUIRE_STAFF_MFA: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   /** Per public account: jobs not yet finished (queued, assigned, running). */
   MEMBER_MAX_ACTIVE_JOBS: z.coerce.number().int().min(1).max(1_000_000).default(500),
   /** Per public account: image storage across all datasets, bytes. */

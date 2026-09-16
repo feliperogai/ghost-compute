@@ -7,6 +7,7 @@ import { unauthorized } from '../errors.js';
 import { uuidParam } from '../modules/schemas.js';
 import { CreditService, type CreditActor } from './service.js';
 import { creditAmount } from './pricing.js';
+import { requireSecondFactor } from '../modules/account/mfa.js';
 
 const idempotencyKey = z.string().regex(/^[A-Za-z0-9._:-]{8,128}$/, 'idempotencyKey: 8–128 of [A-Za-z0-9._:-]');
 
@@ -81,6 +82,7 @@ export const creditRoutes =
       '/v1/credits/grants',
       {
         onRequest: requireUser(ctx, 'admin'),
+        preHandler: requireSecondFactor(ctx),
         schema: {
           body: z
             .object({ userId: z.uuid(), amount: creditAmount, reason: z.string().trim().min(1).max(500), idempotencyKey })

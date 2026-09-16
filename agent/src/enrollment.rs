@@ -25,6 +25,16 @@ pub enum EnrollError {
     BadToken,
     #[error("este computador já está conectado")]
     AlreadyEnrolled,
+    /// The account token works only with a code from its authenticator app, which this
+    /// screen does not ask for: a connection code made with that code does the job.
+    #[error(
+        "esta conta usa verificação em duas etapas: gere um código de conexão (ghe_…) com o código do app autenticador e use-o aqui"
+    )]
+    SecondFactor,
+    #[error(
+        "contas da equipe precisam ativar a verificação em duas etapas (no painel web) antes; depois, use um código de conexão (ghe_…)"
+    )]
+    SecondFactorSetup,
     #[error("o servidor recusou: {0}")]
     Refused(String),
     #[error("não foi possível falar com o servidor: {0}")]
@@ -38,6 +48,8 @@ impl EnrollError {
         match self {
             EnrollError::BadToken => "BAD_TOKEN",
             EnrollError::AlreadyEnrolled => "ALREADY_ENROLLED",
+            EnrollError::SecondFactor => "MFA_REQUIRED",
+            EnrollError::SecondFactorSetup => "MFA_ENROLLMENT_REQUIRED",
             EnrollError::Refused(_) => "REFUSED",
             EnrollError::Network(_) => "NETWORK",
             EnrollError::Local(_) => "LOCAL",
@@ -49,6 +61,8 @@ fn api_err(e: crate::networking::client::ApiError) -> EnrollError {
     use crate::networking::client::ApiError as A;
     match e {
         A::Network(e) => EnrollError::Network(e.to_string()),
+        A::Http { code, .. } if code == "MFA_REQUIRED" => EnrollError::SecondFactor,
+        A::Http { code, .. } if code == "MFA_ENROLLMENT_REQUIRED" => EnrollError::SecondFactorSetup,
         A::Http { status, message, .. } if status.as_u16() == 401 => {
             EnrollError::Refused(format!("token inválido, expirado ou já usado ({message})"))
         }

@@ -5,6 +5,7 @@ import { requireUser, userId } from '../auth/plugin.js';
 import { AppError } from '../errors.js';
 import { uuidParam } from '../modules/schemas.js';
 import { createUserWithToken } from '../modules/admin/service.js';
+import { requireSecondFactor } from '../modules/account/mfa.js';
 import { requirementsSchema, resourcesSchema } from '../jobs/schemas.js';
 import { WORKLOAD_TYPES } from '../scheduler/catalog.js';
 import { creditAmount } from '../credits/pricing.js';
@@ -44,6 +45,7 @@ export const marketRoutes =
       '/v1/provider/enrollment-tokens',
       {
         onRequest: requireUser(ctx, 'member'),
+        preHandler: requireSecondFactor(ctx),
         config: { rateLimit: { max: 30, timeWindow: '1 hour' } },
         schema: {
           body: z

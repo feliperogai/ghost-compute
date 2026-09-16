@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import { z } from 'zod';
 import type { AppContext } from '../context.js';
-import { bearer, isStaff, resolveUserToken, resolveWorkerToken, type Principal } from '../auth/plugin.js';
+import { bearer, isStaff, mustEnroll, resolveUserToken, resolveWorkerToken, type Principal } from '../auth/plugin.js';
 import { JobLifecycle } from '../jobs/lifecycle.js';
 import type { PlatformEvent } from './bus.js';
 
@@ -70,6 +70,10 @@ export function registerWebSocket(app: FastifyInstance, ctx: AppContext) {
       if (p.kind === 'user' && !isStaff(p.role)) {
         // The event stream is platform-wide: public accounts follow their jobs over REST.
         socket.close(WS_CLOSE.REVOKED, 'forbidden');
+        return;
+      }
+      if (mustEnroll(ctx.config, p)) {
+        socket.close(WS_CLOSE.REVOKED, 'two-step verification required');
         return;
       }
       if (p.kind === 'user') {

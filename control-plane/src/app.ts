@@ -44,6 +44,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
       redact: {
         paths: [
           'req.headers.authorization',
+          'req.headers["x-ghost-otp"]',
           '*.token',
           '*.workerSecret',
           '*.secret',

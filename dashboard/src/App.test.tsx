@@ -105,6 +105,54 @@ describe('App', () => {
     void calls;
   });
 
+  it('staff without two-step verification turn it on before seeing the network', async () => {
+    const SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+    let enabled = false;
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && url === '/v1/me/mfa/totp')
+        return json(201, { secret: SECRET, otpauthUrl: `otpauth://totp/ghost:a%40ex.test?secret=${SECRET}&issuer=ghost` });
+      if (init?.method === 'POST' && url === '/v1/me/mfa/totp/confirm') {
+        if (JSON.parse(String(init.body)).code !== '123456') return json(401, { error: { code: 'MFA_INVALID', message: 'Wrong or already used code' } });
+        enabled = true;
+        return json(200, { enabled: true, enabledAt: '2026-01-01T00:00:00Z' });
+      }
+      if (!enabled) return json(403, { error: { code: 'MFA_ENROLLMENT_REQUIRED', message: 'Turn on two-step verification first' } });
+      if (url.startsWith('/v1/me/mfa')) return json(200, { enabled: true });
+      if (url.startsWith('/v1/dashboard/overview')) return json(200, overview);
+      if (url.startsWith('/v1/dashboard/history')) return json(200, history);
+      return json(404, { error: { code: 'NOT_FOUND', message: 'nope' } });
+    });
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'ghu_admin' } });
+    fireEvent.click(screen.getByText('Entrar'));
+    expect(await screen.findByText(/Contas da equipe precisam dela/)).toBeInTheDocument();
+    expect(screen.queryByText('Agora não')).toBeNull(); // required: no way around it
+    fireEvent.click(screen.getByText('Começar'));
+    const qr = await screen.findByRole('img', { name: /QR code/ });
+    expect(qr.querySelector('path')!.getAttribute('d')!.length).toBeGreaterThan(100);
+    expect(screen.getByText('JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP')).toBeInTheDocument();
+    const input = screen.getByLabelText(/Código de 6 dígitos/);
+    fireEvent.change(input, { target: { value: '000000' } });
+    fireEvent.click(screen.getByText('Ativar'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Código errado ou já usado');
+    fireEvent.change(input, { target: { value: '12 34-56' } }); // digits only
+    expect(input).toHaveValue('123456');
+    fireEvent.click(screen.getByText('Ativar'));
+    expect(await screen.findByText('Workers online')).toBeInTheDocument();
+    expect(sessionStorage.getItem('ghost.dashboard.token')).toBe('ghu_admin');
+    expect(screen.queryByText('Ativar verificação em duas etapas')).toBeNull();
+  });
+
+  it('offers two-step verification when it is optional and off', async () => {
+    sessionStorage.setItem('ghost.dashboard.token', 't');
+    mockApi({ '/v1/me/mfa': { enabled: false, enabledAt: null }, '/v1/dashboard/overview': overview, '/v1/dashboard/history': history });
+    render(<App />);
+    fireEvent.click(await screen.findByText('Ativar verificação em duas etapas'));
+    expect(screen.getByText(/Protege a conta mesmo se o token vazar/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Agora não'));
+    expect(await screen.findByText('Workers online')).toBeInTheDocument();
+  });
+
   it('lists workers with hardware, temperature and links to the details page', async () => {
     sessionStorage.setItem('ghost.dashboard.token', 't');
     location.hash = '#/workers';

@@ -171,12 +171,13 @@ Os dois riscos **críticos** encontrados (3 e 9) estão mitigados e testados. Os
   - **Novo:** `/v1/me/tokens` para listar, criar (com a mesma validade máxima) e revogar os próprios tokens, com no máximo 20 ativos.
   - **Novo:** revogação do computador pelo dono.
   - **Novo:** tokens da equipe também **expiram** (`STAFF_TOKEN_TTL_DAYS`, padrão 90) e são trocados por `/v1/me/tokens`. Tokens antigos sem validade ganham 90 dias a partir da atualização (migração 012).
+  - **Novo: verificação em duas etapas (TOTP, RFC 6238).** Obrigatória para a equipe (`REQUIRE_STAFF_MFA=true`, padrão): sem ela, a conta só acessa a própria página para ligá-la (o painel web guia com QR code). Opcional para contas públicas. Ligada, as ações que criam credenciais ou créditos pedem um código atual do app (`x-ghost-otp`): criar token, criar usuário, gerar código de conexão (admin e provedor), conceder créditos, desligar a própria verificação. Assim, um token roubado não consegue criar um substituto, outro admin, um computador "confiável" nem créditos; revogá-lo encerra o acesso. Cada código vale uma vez (último passo de 30 s guardado); 5 códigos errados bloqueiam por 15 minutos e ficam no log de auditoria (`mfa.failure`). O segredo fica cifrado no banco (AES-256-GCM, chave derivada de `WORKER_TOKEN_SECRET`). Celular perdido: `reset-mfa` no servidor.
 - **Testes:**
+  - `mfa.test.ts` (vetores das RFC 4226/6238, uso único, bloqueio, ações que pedem o código, `REQUIRE_STAFF_MFA` na API e no WebSocket, segredo cifrado, `reset-mfa`);
   - `security.test.ts` › *public tokens expire, can be rotated and revoked…*, *staff tokens expire too…*, *a provider revokes a stolen computer…*;
   - `auth.test.ts`;
   - agente: `credentials` (DPAPI, 0600).
-- **Residual:**
-  - Não há MFA.
+- **Residual:** um token roubado de uma conta com verificação em duas etapas ainda vale, até expirar ou ser revogado, para o que não cria credenciais (ler dados, criar jobs). **Baixo.**
 
 ## 7. Man-in-the-middle
 
@@ -373,7 +374,6 @@ O item 5 (assinatura) continua pendente e depende de um certificado da organiza�
 |---|---|---|
 | 3 | Conluio de contas em redes diferentes, sem computadores da equipe online | Manter computadores da equipe online (verificação aleatória) ou `REQUIRE_TRUSTED_REPLICA=true` |
 | 5 / 15 | Windows sem AppContainer: um escape teria rede e arquivos do usuário | Criar o sandbox com AppContainer ou token restrito; firewall no instalador |
-| 6 | Sem MFA | OIDC com MFA |
 | 10 | DDoS volumétrico | CDN/WAF |
 | 12 | Provedor vê inputs | Documentado; computação confidencial está fora do escopo |
 | 16 | Binários sem assinatura | Assinatura de código |
