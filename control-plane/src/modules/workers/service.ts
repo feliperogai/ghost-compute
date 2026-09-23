@@ -15,13 +15,14 @@ export interface HeartbeatInput {
   agentVersion?: string | undefined;
 }
 
-const WORKER_COLUMNS = `id, name, owner_user_id, status, state, max_concurrent_tasks, hardware, last_usage,
+const WORKER_COLUMNS = `id, name, device_id, owner_user_id, status, state, max_concurrent_tasks, hardware, last_usage,
   agent_version, last_seen_at, created_at, revoked_at, revoked_reason`;
 
 export function toWorkerDto(r: Record<string, any>) {
   return {
     id: r.id,
     name: r.name,
+    deviceId: r.device_id ?? null,
     ownerUserId: r.owner_user_id,
     status: r.status,
     state: r.state,
@@ -50,6 +51,7 @@ export class WorkerService {
     hardware: Hardware;
     maxConcurrentTasks: number;
     agentVersion?: string | undefined;
+    deviceId?: string | undefined;
   }) {
     if (!hasPrefix(input.enrollmentToken, 'enroll')) throw unauthorized('Invalid enrollment token');
     const secret = generateSecret('worker');
@@ -62,9 +64,17 @@ export class WorkerService {
       const token = t.rows[0];
       if (!token) throw unauthorized('Invalid enrollment token');
       const w = await c.query(
-        `INSERT INTO workers (name, owner_user_id, secret_hash, max_concurrent_tasks, hardware, agent_version)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${WORKER_COLUMNS}`,
-        [input.name, token.created_by, hashSecret(secret), input.maxConcurrentTasks, input.hardware, input.agentVersion ?? null],
+        `INSERT INTO workers (name, owner_user_id, secret_hash, max_concurrent_tasks, hardware, agent_version, device_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ${WORKER_COLUMNS}`,
+        [
+          input.name,
+          token.created_by,
+          hashSecret(secret),
+          input.maxConcurrentTasks,
+          input.hardware,
+          input.agentVersion ?? null,
+          input.deviceId ?? null,
+        ],
       );
       const worker = w.rows[0];
       await c.query(`UPDATE enrollment_tokens SET used_at = now(), used_by_worker_id = $2 WHERE id = $1`, [
@@ -77,7 +87,7 @@ export class WorkerService {
         action: 'worker.register',
         targetType: 'worker',
         targetId: worker.id,
-        details: { name: input.name, enrollmentTokenId: token.id },
+        details: { name: input.name, enrollmentTokenId: token.id, deviceId: input.deviceId ?? null },
       });
       return worker;
     });

@@ -25,6 +25,7 @@ export const workerRoutes =
             hardware: hardwareSchema,
             maxConcurrentTasks: z.number().int().min(1).max(256).default(1),
             agentVersion: z.string().max(50).optional(),
+            deviceId: z.uuid().optional(),
           }),
         },
       },
