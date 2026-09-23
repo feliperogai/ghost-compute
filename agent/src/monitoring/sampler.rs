@@ -137,6 +137,9 @@ pub(crate) fn hottest(temps: impl Iterator<Item = f32>) -> Option<f32> {
 mod tests {
     use super::*;
 
+    /// Tests that look at our process tree must not overlap with the one that spawns a child.
+    static TREE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn samples_are_in_range() {
         let mut s = Sampler::new();
@@ -178,6 +181,7 @@ mod tests {
     fn a_new_child_process_counts_from_its_first_samples() {
         // The sandbox case: a child that starts between samples and burns CPU must be
         // attributed to ghost immediately (not look like the owner's activity).
+        let _tree = TREE.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = Sampler::new();
         s.sample();
         let exe = std::env::current_exe().unwrap();
@@ -209,6 +213,7 @@ mod tests {
 
     #[test]
     fn does_not_double_count_threads() {
+        let _tree = TREE.lock().unwrap_or_else(|e| e.into_inner());
         let handles: Vec<_> =
             (0..4).map(|_| std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_millis(400)))).collect();
         let mut s = Sampler::new();
