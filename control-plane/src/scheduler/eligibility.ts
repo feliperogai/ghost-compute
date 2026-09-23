@@ -1,6 +1,7 @@
 // Hard constraints. A worker that fails any check is never selected, whatever the strategy says.
 import { workloadType } from './catalog.js';
 import type { Capacity, IneligibleReason, JobSpec, Resources, WorkerSnapshot } from './types.js';
+import { estimateSeconds } from './performance.js';
 
 export interface EligibilityOptions {
   now: Date;
@@ -63,6 +64,13 @@ export function ineligibility(job: JobSpec, w: WorkerSnapshot, o: EligibilityOpt
       return 'GPU_VENDOR';
     const maxVram = Math.max(0, ...gpus.map((g) => g.vramMb ?? 0));
     if (r.minVramMb && maxVram < r.minVramMb) return 'INSUFFICIENT_VRAM';
+    // A GPU in the inventory is not enough: it must have passed the calibration
+    // (correct checksum on our shader, correct inference labels).
+    if (!w.performance) return 'GPU_NOT_CALIBRATED';
+    if (!w.performance.gpu?.verified) return 'GPU_UNVERIFIED';
+    if (r.gpuVendor === 'NVIDIA' && !w.performance.gpu.nvidia) return 'GPU_VENDOR';
+    const free = w.performance.gpu.vramAvailableMb;
+    if (r.minVramMb && free !== null && free < r.minVramMb) return 'INSUFFICIENT_VRAM';
   }
 
   const a = available(w.capacity, w.reserved);
@@ -75,6 +83,10 @@ export function ineligibility(job: JobSpec, w: WorkerSnapshot, o: EligibilityOpt
 
   const temp = w.usage?.temperatureC;
   if (temp != null && temp >= w.capacity.maxTemperatureC - o.thermalMarginC) return 'TOO_HOT';
+
+  // Measured speed says it cannot finish in time: do not waste an attempt.
+  const est = estimateSeconds(job, w);
+  if (est !== null && job.timeoutSeconds && est > job.timeoutSeconds) return 'TOO_SLOW';
   return null;
 }
 

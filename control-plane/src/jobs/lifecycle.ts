@@ -9,6 +9,7 @@ import { countsAsFailure, defaultRetryPolicy, type AttemptOutcome, type RetryPol
 import type { JobStatus, Placement, Resources } from '../scheduler/types.js';
 import { refreshGroupForJob } from '../inference/groups.js';
 import { validateCheckpoint } from '../inference/schemas.js';
+import { CalibrationService } from '../performance/service.js';
 
 export interface AssignmentOffer {
   assignmentId: string;
@@ -246,9 +247,21 @@ export class JobLifecycle {
         [job.id, JSON.stringify(output), actual],
       );
       await event(c, job.id, a.id, workerId, 'job.completed', { attempt: a.attempt, outputSha256: actual });
-      return { jobId: job.id, status: 'COMPLETED' as const, workerId, assignmentId: a.id };
+      return {
+        jobId: job.id,
+        status: 'COMPLETED' as const,
+        workerId,
+        assignmentId: a.id,
+        observation: observe(job.type, output, a.started_at),
+      };
     });
-    await this.after(res);
+    const { observation, ...after } = res;
+    await this.after(after);
+    // Real throughput feeds the worker's profile (the scheduler prefers it over benchmarks).
+    if (observation)
+      await new CalibrationService(this.ctx)
+        .recordObservation(workerId, observation.type, observation.items, observation.seconds)
+        .catch(() => {});
     return { assignmentId, jobStatus: res.status };
   }
 
@@ -469,6 +482,15 @@ export class JobLifecycle {
     });
     if (TERMINAL.includes(r.status)) await this.onTerminal(r.jobId);
   }
+}
+
+/** Items this attempt processed and how long it took (image-inference only). */
+function observe(type: string, output: unknown, startedAt: Date | null) {
+  if (type !== 'image-inference' || !startedAt || typeof output !== 'object' || output === null) return null;
+  const o = output as { count?: unknown; resumed?: unknown };
+  const items = (typeof o.count === 'number' ? o.count : 0) - (typeof o.resumed === 'number' ? o.resumed : 0);
+  const seconds = (Date.now() - startedAt.getTime()) / 1000;
+  return items > 0 && seconds > 0 ? { type, items, seconds } : null;
 }
 
 async function lockChain(c: pg.PoolClient, assignmentId: string) {

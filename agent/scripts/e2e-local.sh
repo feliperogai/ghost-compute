@@ -69,12 +69,24 @@ S=$("$AGENT" --config "$WORK/agent.toml" status)
 [ "$(echo "$S" | json .connection.status)" = connected ] || fail "not connected: $S"
 [ -n "${FIXTURE_OUT:-}" ] && echo "$S" >"$FIXTURE_OUT"
 W=$(curl -sf "$API/v1/workers/$WID" -H "authorization: Bearer $ADMIN")
-echo "$W" | json '.state' | grep -qx available || fail "expected state available: $W"
+echo "$W" | json '.state' | grep -qxE 'available|running' || fail "expected state available: $W"
 echo "$W" | json '.workloadTypes' | grep -q benchmark || fail "benchmark not declared: $W"
 [ "$(echo "$W" | json .deviceId)" = "$DID" ] || fail "device id mismatch"
 echo "$W" | json '.lastUsage.cpuPercent' | grep -qE '^[0-9.]+$' || fail "no usage: $W"
 echo "$W" | json '.hardware.cpu.threads' | grep -qE '^[1-9]' || fail "no hardware: $W"
 echo "state=available usage=$(echo "$W" | json '.lastUsage')"
+
+echo "== automatic calibration on join → WorkerPerformanceProfile"
+for _ in $(seq 120); do
+  P=$(curl -sf "$API/v1/workers/$WID/profile" -H "authorization: Bearer $ADMIN")
+  [ "$(echo "$P" | json .summary)" != "null" ] && break
+  sleep 0.5
+done
+[ "$(echo "$P" | json .summary.verified)" = true ] || fail "calibration not verified: $P"
+[ "$(echo "$P" | json '.calibrations[0].reason')" = first-join ] || fail "unexpected calibration: $P"
+echo "$P" | json .profile.inference.cpu.accuracyBp | grep -qx 10000 || fail "calibration labels wrong: $P"
+echo "profile: $(echo "$P" | json '.summary')"
+echo "scores: $(echo "$P" | json '.profile.scores')"
 
 echo "== benchmark job, executed in the sandbox"
 OP="$ADMIN"
@@ -124,6 +136,9 @@ echo "$R" | node -e "
   if (r.items.length !== 24 || ok !== 24) throw new Error('labels: ' + ok + '/' + r.items.length);
   console.log('inference: ' + ok + '/24 correct in ' + r.summary.batches + ' batches,', JSON.stringify(r.summary.accelerators));
 " || fail "bad inference result"
+P=$(curl -sf "$API/v1/workers/$WID/profile" -H "authorization: Bearer $ADMIN")
+[ "$(echo "$P" | json ".observed['image-inference'].samples")" -ge 1 ] || fail "real-job throughput not recorded: $P"
+echo "observed on real batches: $(echo "$P" | json ".observed['image-inference'].itemsPerSec") items/s"
 
 echo "== hostile job is refused by the control plane"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/v1/jobs" -H "authorization: Bearer $OP" -H 'content-type: application/json' \

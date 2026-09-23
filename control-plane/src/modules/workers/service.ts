@@ -6,6 +6,7 @@ import { AppError, conflict, notFound, unauthorized } from '../../errors.js';
 import type { Hardware } from '../schemas.js';
 import { JobLifecycle, type AssignmentOffer } from '../../jobs/lifecycle.js';
 import type { Capacity } from '../../scheduler/types.js';
+import { CalibrationService } from '../../performance/service.js';
 
 export type ReportedState = 'waiting' | 'available' | 'running' | 'paused' | 'stopped';
 
@@ -45,9 +46,11 @@ export function toWorkerDto(r: Record<string, any>) {
 
 export class WorkerService {
   private readonly jobs: JobLifecycle;
+  private readonly calibration: CalibrationService;
 
   constructor(private readonly ctx: AppContext) {
     this.jobs = new JobLifecycle(ctx);
+    this.calibration = new CalibrationService(ctx);
   }
 
   async register(input: {
@@ -261,11 +264,14 @@ export class WorkerService {
     await this.ctx.bus.publish('worker.heartbeat', { workerId, state: hb.state, usage: hb.usage });
 
     const assignments: AssignmentOffer[] = await this.jobs.pendingFor(workerId);
+    // Benchmarks on join (and after hardware/agent changes); the agent runs them when idle.
+    const calibration = await this.calibration.forHeartbeat(workerId, hb);
     return {
       serverTime: new Date().toISOString(),
       heartbeatIntervalSeconds: this.ctx.config.HEARTBEAT_INTERVAL_SECONDS,
       cancelAssignmentIds,
       assignments,
+      ...(calibration ? { calibration } : {}),
     };
   }
 

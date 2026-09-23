@@ -153,6 +153,27 @@ impl ImageInferenceParams {
     }
 }
 
+/// GPU compute probe used by the worker's own calibration (never sent by the network).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GpuProbeParams {
+    /// Square matrix size; multiple of 16.
+    pub size: u32,
+    pub max_iterations: u32,
+}
+
+impl GpuProbeParams {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(16..=1024).contains(&self.size) || !self.size.is_multiple_of(16) {
+            return Err("size must be a multiple of 16 in 16..=1024".into());
+        }
+        if !(1..=8192).contains(&self.max_iterations) {
+            return Err("maxIterations must be 1..=8192".into());
+        }
+        Ok(())
+    }
+}
+
 /// A validated, runnable workload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "params", rename_all = "lowercase")]
@@ -160,6 +181,9 @@ pub enum Workload {
     Benchmark(BenchmarkParams),
     #[serde(rename = "image-inference")]
     ImageInference(ImageInferenceParams),
+    /// Local only: `parse` refuses it, only `parse_local` (the sandbox) accepts it.
+    #[serde(rename = "gpu-probe")]
+    GpuProbe(GpuProbeParams),
 }
 
 impl Workload {
@@ -183,10 +207,23 @@ impl Workload {
         }
     }
 
+    /// Also accepts the agent's internal types. Used by the sandbox for requests that
+    /// come from this agent (calibration), never for jobs from the network.
+    pub fn parse_local(ty: &str, input: &serde_json::Value) -> Result<Self, Rejection> {
+        if ty == "gpu-probe" {
+            let p: GpuProbeParams = serde_json::from_value(input.clone())
+                .map_err(|e| Rejection::InvalidParams { ty: "gpu-probe", msg: e.to_string() })?;
+            p.validate().map_err(|msg| Rejection::InvalidParams { ty: "gpu-probe", msg })?;
+            return Ok(Workload::GpuProbe(p));
+        }
+        Self::parse(ty, input)
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
             Workload::Benchmark(_) => "benchmark",
             Workload::ImageInference(_) => "image-inference",
+            Workload::GpuProbe(_) => "gpu-probe",
         }
     }
 
@@ -195,6 +232,8 @@ impl Workload {
         let (bytes, pinned) = match self {
             Workload::Benchmark(_) => (BENCHMARK_WASM, BENCHMARK_SHA256),
             Workload::ImageInference(_) => (IMAGE_INFERENCE_WASM, IMAGE_INFERENCE_SHA256),
+            // Native probe with our fixed shader: no module.
+            Workload::GpuProbe(_) => return Ok(&[]),
         };
         if hex::encode(Sha256::digest(bytes)) != pinned {
             return Err(Rejection::Integrity(self.type_name()));
@@ -206,6 +245,7 @@ impl Workload {
         match self {
             Workload::Benchmark(_) => BENCHMARK_SHA256,
             Workload::ImageInference(_) => IMAGE_INFERENCE_SHA256,
+            Workload::GpuProbe(_) => "",
         }
     }
 }
@@ -286,6 +326,20 @@ mod tests {
         ];
         for b in bad {
             assert!(matches!(Workload::parse("image-inference", &b), Err(Rejection::InvalidParams { .. })), "{b}");
+        }
+    }
+
+    #[test]
+    fn internal_types_never_come_from_the_network() {
+        let p = json!({ "size": 64, "maxIterations": 4 });
+        assert!(matches!(Workload::parse("gpu-probe", &p), Err(Rejection::UnknownType(_))));
+        assert!(matches!(Workload::parse_local("gpu-probe", &p), Ok(Workload::GpuProbe(_))));
+        for bad in [
+            json!({ "size": 65, "maxIterations": 4 }),
+            json!({ "size": 4096, "maxIterations": 4 }),
+            json!({ "size": 64, "maxIterations": 0 }),
+        ] {
+            assert!(matches!(Workload::parse_local("gpu-probe", &bad), Err(Rejection::InvalidParams { .. })), "{bad}");
         }
     }
 
