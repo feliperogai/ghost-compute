@@ -10,12 +10,15 @@ for the desktop app, and **isolated execution** of registered workloads (see
 
 ## Execution
 
-Only built-in workload types run (today: `benchmark`). A job carries a type and strictly
+Only built-in workload types run: `benchmark` and `image-inference` ([ADR 004](../docs/adr/004-image-inference.md)). A job carries a type and strictly
 validated parameters, never code. Each job runs in a fresh `ghost-sandbox` process
 (empty environment, private temp dir, Job Object / rlimits) hosting Wasmtime with no
 WASI; the module is embedded in the binary and pinned by SHA-256. `ghost-sandbox` must
 sit next to `ghost-agent`; without it execution is disabled and no types are declared.
-Rebuild modules with `../workloads/build.sh` (prints the new hash to pin). Until execution exists the agent reports `waiting` and
+Rebuild modules with `../workloads/build.sh` (prints the new hash to pin).
+`image-inference` streams verified images into the sandbox, runs the dense layers on a GPU
+(wgpu, our fixed shader; cargo feature `gpu`, on by default) when the owner shares one, and
+resumes from server checkpoints. Until execution exists the agent reports `waiting` and
 declines any offer, so no task is ever held by it.
 
 ## Use
@@ -65,7 +68,7 @@ Exit codes of `run`: `0` shutdown · `2` credentials rejected (re-enroll) · `3`
 ## Tests
 
 ```bash
-cargo test                        # 53 unit + integration tests
+cargo test                        # unit + integration tests (GPU path uses any Vulkan adapter, e.g. Mesa lavapipe)
 ./scripts/e2e-local.sh            # real control plane + real binary (needs Postgres/Redis)
 ```
 

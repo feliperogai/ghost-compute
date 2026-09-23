@@ -1,6 +1,6 @@
 # ghost
 
-Plataforma de computação distribuída em **rede privada**: computadores Windows emprestam CPU ociosa para executar workloads registrados, isolados em sandbox e sob os limites definidos pelo dono de cada máquina.
+Plataforma de computação distribuída em **rede privada**: computadores Windows emprestam CPU e GPU ociosas para executar workloads registrados, isolados em sandbox e sob os limites definidos pelo dono de cada máquina.
 
 ## Componentes
 
@@ -10,7 +10,7 @@ Plataforma de computação distribuída em **rede privada**: computadores Window
 | [`agent/`](agent/) | Worker para Windows: hardware, monitoramento, política do dono, heartbeat, execução isolada | Rust, Wasmtime |
 | [`desktop/`](desktop/) | App do dono do computador: estado, controles e configurações | Tauri 2, React |
 | [`ipc/`](ipc/) | Protocolo local entre app e agente (named pipe / Unix socket) | Rust |
-| [`workloads/`](workloads/) | Workloads embutidos no agente (WebAssembly), hoje só `benchmark` | Rust → wasm32 |
+| [`workloads/`](workloads/) | Workloads embutidos no agente (WebAssembly): `benchmark` e `image-inference` | Rust → wasm32 |
 | [`docs/`](docs/) | [Arquitetura](docs/ARCHITECTURE.md) e decisões ([ADRs](docs/adr/)) | — |
 
 ```
@@ -24,6 +24,23 @@ Operador ──REST──▶ control-plane ──(heartbeat, atribuições, HTTP
 - **Nenhuma execução arbitrária.** Jobs só referenciam tipos registrados e carregam parâmetros validados; o código é embutido no agente e fixado por hash ([ADR 003](docs/adr/003-isolated-execution.md)).
 - **O dono manda.** Compartilhamento começa desligado; pausar e parar são imediatos; limites de CPU, RAM, temperatura, horário, ociosidade, jogos e apps prioritários são locais e o servidor não os relaxa.
 - **O servidor não confia no worker.** Resultados são verificados por hash; o scheduler revalida toda decisão e o banco impede sobrealocação.
+
+## Workloads
+
+| Tipo | O que faz | Onde roda |
+|---|---|---|
+| `benchmark` | Hash, primos, produto de matrizes | WASM, CPU |
+| `image-inference` | Classifica um dataset de imagens PNG/JPEG em lotes paralelos, com retry, timeout, checkpoint e progresso ([ADR 004](docs/adr/004-image-inference.md)) | Decodificação em WASM; camadas densas em CPU ou GPU (NVIDIA preferida) |
+
+```bash
+# Inferência: dataset → lotes → workers → resultado combinado
+curl -X POST $API/v1/datasets -d '{"name":"digits"}'                              # → id
+curl -X POST "$API/v1/datasets/$ID/images?name=a.png" -H 'content-type: image/png' --data-binary @a.png
+curl -X POST $API/v1/datasets/$ID/seal
+curl -X POST $API/v1/inference -d '{"datasetId":"'$ID'","batchSize":32,"accelerator":"auto"}'  # → run
+curl $API/v1/inference/$RUN            # status e progresso
+curl $API/v1/inference/$RUN/result     # rótulo, confiança e top-k por imagem
+```
 
 ## Rodando localmente
 

@@ -2,9 +2,9 @@ name: control-plane
 
 on:
   push:
-    paths: ["control-plane/**", ".github/workflows/control-plane.yml"]
+    paths: ["control-plane/**", "workloads/image-inference/testdata/**", ".github/workflows/control-plane.yml"]
   pull_request:
-    paths: ["control-plane/**", ".github/workflows/control-plane.yml"]
+    paths: ["control-plane/**", "workloads/image-inference/testdata/**", ".github/workflows/control-plane.yml"]
 
 jobs:
   test:

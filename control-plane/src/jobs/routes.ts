@@ -3,9 +3,9 @@ import { z } from 'zod';
 import type { AppContext } from '../context.js';
 import { requireUser, requireWorker, userId, workerId } from '../auth/plugin.js';
 import { unauthorized } from '../errors.js';
-import { optionalBody, uuidParam } from '../modules/schemas.js';
+import { boundedJson, optionalBody, uuidParam } from '../modules/schemas.js';
 import { WORKLOAD_TYPES } from '../scheduler/catalog.js';
-import { createJobSchema, jobStatusSchema, resultSchema } from './schemas.js';
+import { createJobSchema, jobStatusSchema, MAX_CHECKPOINT_BYTES, resultSchema } from './schemas.js';
 import { JobService } from './service.js';
 import { JobLifecycle } from './lifecycle.js';
 
@@ -104,10 +104,16 @@ export const assignmentRoutes =
       {
         schema: {
           params: uuidParam,
-          body: z.object({ progress: z.number().min(0).max(1), stage: z.string().trim().min(1).max(100).optional() }),
+          body: z.object({
+            progress: z.number().min(0).max(1),
+            stage: z.string().trim().min(1).max(100).optional(),
+            /** Partial results (resumable workloads); validated against the job's input. */
+            checkpoint: boundedJson(MAX_CHECKPOINT_BYTES).optional(),
+          }),
         },
       },
-      async (req) => lc.progress(workerId(req), req.params.id, req.body.progress, req.body.stage),
+      async (req) =>
+        lc.progress(workerId(req), req.params.id, req.body.progress, req.body.stage, req.body.checkpoint),
     );
 
     app.post('/v1/worker/assignments/:id/result', { schema: { params: uuidParam, body: resultSchema } }, async (req) => {
