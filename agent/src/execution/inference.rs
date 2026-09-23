@@ -105,7 +105,7 @@ impl Weights {
         if (dim(8), dim(12), dim(16)) != (INPUT, HIDDEN, CLASSES) {
             return Err("unexpected model dimensions".into());
         }
-        let packed = bytes[20..].chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+        let packed = bytes[20..].as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
         Ok(Self { packed })
     }
 
