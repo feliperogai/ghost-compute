@@ -1,0 +1,42 @@
+# ghost-agent configuration.
+# Windows default location: %ProgramData%\ghost\agent.toml
+
+[server]
+url = "https://ghost.example.com"
+# PEM with the CA(s) that signed the control plane certificate.
+# When set, ONLY these CAs are trusted (pinning); public roots are ignored.
+# ca_cert = 'C:\ProgramData\ghost\ca.pem'
+# Plain HTTP is accepted only for loopback addresses with this flag (development).
+allow_insecure_localhost = false
+request_timeout_secs = 15
+
+[agent]
+# name = "desk-042"          # defaults to the host name
+# data_dir = 'C:\ProgramData\ghost'
+max_concurrent_tasks = 1
+sample_interval_secs = 2
+log_level = "info"
+
+# Owner limits. The server can never relax these.
+[limits]
+enabled = true
+max_cpu_percent = 25            # share of the whole machine for ghost
+max_ram_mb = 2048
+max_gpu_percent = 0             # 0 = do not share the GPU
+max_temperature_c = 85
+user_cpu_threshold_percent = 30 # owner's own CPU use above this → yield
+user_ram_threshold_percent = 80
+require_idle_secs = 300         # no keyboard/mouse input for 5 min
+resume_after_secs = 60          # conditions must stay good this long
+pause_on_battery = true
+
+# Only share at night on weekdays and all weekend. Empty = always.
+[[limits.schedule]]
+days = ["mon", "tue", "wed", "thu", "fri"]
+from = "22:00"
+to = "07:00"
+
+[[limits.schedule]]
+days = ["sat", "sun"]
+from = "00:00"
+to = "23:59"
