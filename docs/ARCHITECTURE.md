@@ -1,6 +1,6 @@
 # ghost — Arquitetura do MVP
 
-> Status: proposta. Nenhum código escrito. Rede privada e controlada.
+> Status: proposta original (antes do código). Decisões que a alteraram estão em [`adr/`](adr/): stack do Control Plane (001), modelo de Job e scheduler (002), execução isolada (003).
 
 ---
 
