@@ -35,7 +35,7 @@ fn params(images: u32) -> Value {
         ],
         "parallel": { "maxSandboxes": 2 },
         "inference": { "images": images },
-        "gpu": { "size": 512, "maxIterations": 16 },
+        "gpu": { "size": 512, "maxIterations": 4 },
         "network": { "pings": 5, "downloadBytes": 1 << 20, "uploadBytes": 1 << 20 },
         "storage": { "bytes": 4 << 20 }
     })
@@ -94,7 +94,16 @@ async fn run_agent(
     let (snap_tx, snapshots) =
         watch::channel(Snapshot { latest: sample.clone(), avg: sample, max_temperature_c: Some(45.0), samples: 3 });
     let (data, work) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let limits = Limits { resume_after_secs: 0, require_idle_secs: 0, max_cpu_percent: 50.0, ..Limits::default() };
+    // Like the e2e agent: the test's own load must not count as the owner's activity.
+    let limits = Limits {
+        resume_after_secs: 0,
+        require_idle_secs: 0,
+        max_cpu_percent: 50.0,
+        user_cpu_threshold_percent: 100.0,
+        user_ram_threshold_percent: 100.0,
+        pause_on_battery: false,
+        ..Limits::default()
+    };
     let shared = Arc::new(Shared::new(
         AgentInfo {
             version: "t".into(),
@@ -127,14 +136,23 @@ async fn run_agent(
 }
 
 async fn wait_report(s: &MockServer, id: Uuid) -> Value {
-    for _ in 0..600 {
+    // Generous: 2-core CI runners emulate the GPU in software (WARP / lavapipe).
+    for _ in 0..1800 {
         let reqs = s.received_requests().await.unwrap();
         if let Some(r) = reqs.iter().find(|r| r.url.path() == format!("/v1/worker/calibration/{id}/report")) {
             return serde_json::from_slice(&r.body).unwrap();
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("no report");
+    let seen: Vec<String> = s
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| format!("{} {}", r.method, r.url.path()))
+        .filter(|p| !p.ends_with("/heartbeat"))
+        .collect();
+    panic!("no report; requests seen: {seen:?}");
 }
 
 #[tokio::test]
