@@ -19,7 +19,9 @@ jobs:
         working-directory: ${{ matrix.crate }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: the embedded WebAssembly modules are hash-pinned, and their bytes depend
+      # on the compiler; wasmtime 47 also needs this toolchain. Upgrade deliberately.
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
