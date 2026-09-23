@@ -2,9 +2,9 @@ name: agent
 
 on:
   push:
-    paths: ["agent/**", "ipc/**", ".github/workflows/agent.yml"]
+    paths: ["agent/**", "ipc/**", "workloads/**", ".github/workflows/agent.yml"]
   pull_request:
-    paths: ["agent/**", "ipc/**", ".github/workflows/agent.yml"]
+    paths: ["agent/**", "ipc/**", "workloads/**", ".github/workflows/agent.yml"]
 
 jobs:
   test:

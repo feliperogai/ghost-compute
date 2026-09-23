@@ -11,6 +11,8 @@ import type { JobStatus, Placement, Resources } from '../scheduler/types.js';
 export interface AssignmentOffer {
   assignmentId: string;
   jobId: string;
+  /** Display name for the owner's desktop app (optional). */
+  name: string | null;
   attempt: number;
   type: string;
   input: unknown;
@@ -21,6 +23,7 @@ export interface AssignmentOffer {
 
 interface JobRow {
   id: string;
+  name: string | null;
   status: JobStatus;
   type: string;
   priority: number;
@@ -117,6 +120,7 @@ export class JobLifecycle {
       return {
         assignmentId: row.id,
         jobId: job.id,
+        name: job.name,
         attempt: row.attempt,
         type: job.type,
         input: job.input,
@@ -143,7 +147,7 @@ export class JobLifecycle {
 
   async pendingFor(workerId: string): Promise<AssignmentOffer[]> {
     const { rows } = await this.ctx.db.query(
-      `SELECT a.id, a.attempt, a.accept_deadline, j.id AS job_id, j.type, j.input, j.resources, j.timeout_seconds
+      `SELECT a.id, a.attempt, a.accept_deadline, j.id AS job_id, j.name, j.type, j.input, j.resources, j.timeout_seconds
          FROM job_assignments a JOIN jobs j ON j.id = a.job_id
         WHERE a.worker_id = $1 AND a.status = 'assigned' AND a.accept_deadline > now()
         ORDER BY a.assigned_at`,
@@ -152,6 +156,7 @@ export class JobLifecycle {
     return rows.map((r) => ({
       assignmentId: r.id,
       jobId: r.job_id,
+      name: r.name,
       attempt: r.attempt,
       type: r.type,
       input: r.input,

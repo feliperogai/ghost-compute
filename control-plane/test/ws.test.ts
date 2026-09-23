@@ -90,7 +90,7 @@ describe('websocket', () => {
     const box = inbox(ws);
     await box.next((m) => m.type === 'ready');
     const assigned = await box.next((m) => m.type === 'job.assigned');
-    expect(assigned.assignment).toMatchObject({ jobId: job.id, type: 'wasm-cpu' });
+    expect(assigned.assignment).toMatchObject({ jobId: job.id, type: 'benchmark' });
 
     const code = closed(ws);
     await h.app.inject({

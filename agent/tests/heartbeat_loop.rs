@@ -76,6 +76,7 @@ fn make_loop(s: &MockServer) -> Rig {
         policy: Policy::new(limits, false),
         shared: shared.clone(),
         interval: Duration::from_millis(50),
+        executor: None,
     };
     Rig { hb, shared, _snap: snap_tx, _dir: dir }
 }

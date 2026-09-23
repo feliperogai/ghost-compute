@@ -13,7 +13,7 @@ function worker(id: string, over: Partial<WorkerSnapshot> = {}): WorkerSnapshot 
     state: 'available',
     lastSeenAt: new Date(now.getTime() - 1000),
     maxConcurrent: 2,
-    workloadTypes: ['wasm-cpu'],
+    workloadTypes: ['benchmark'],
     hardware: { os: { name: 'Windows' }, cpu: { cores: 8, threads: 16, features: ['avx2'] }, ramMb: 32768, gpus: [] },
     capacity: { cpuCores: 4, ramMb: 8192, gpuPercent: 0, vramMb: 0, diskMb: 10_000, maxTemperatureC: 85 },
     usage: { cpuPercent: 10, cpuGhostPercent: 0, temperatureC: 50 },
@@ -27,7 +27,7 @@ function worker(id: string, over: Partial<WorkerSnapshot> = {}): WorkerSnapshot 
 function job(id: string, over: Partial<JobSpec> = {}): JobSpec {
   return {
     id,
-    type: 'wasm-cpu',
+    type: 'benchmark',
     priority: 50,
     requirements: {},
     resources: { cpuCores: 1, ramMb: 1024, gpu: false, vramMb: 0, diskMb: 0 },
@@ -39,7 +39,7 @@ function job(id: string, over: Partial<JobSpec> = {}): JobSpec {
 
 const gpuWorker = (id: string, over: Partial<WorkerSnapshot> = {}) =>
   worker(id, {
-    workloadTypes: ['wasm-cpu', 'wasm-gpu'],
+    workloadTypes: ['benchmark', 'gpu-test'],
     hardware: { os: { name: 'Windows' }, cpu: { cores: 8, features: [] }, ramMb: 32768, gpus: [{ name: 'RTX', vendor: 'NVIDIA', vramMb: 12288 }] },
     capacity: { cpuCores: 4, ramMb: 8192, gpuPercent: 50, vramMb: 12288, diskMb: 10_000, maxTemperatureC: 85 },
     ...over,
@@ -71,7 +71,7 @@ describe('eligibility (hard constraints)', () => {
 
   it('gpu requirements', () => {
     const g = gpuWorker('g');
-    const gj = job('j', { type: 'wasm-gpu', resources: { cpuCores: 1, ramMb: 512, gpu: true, vramMb: 4096, diskMb: 0 } });
+    const gj = job('j', { type: 'gpu-test', resources: { cpuCores: 1, ramMb: 512, gpu: true, vramMb: 4096, diskMb: 0 } });
     expect(ineligibility(gj, g, opts)).toBeNull();
     expect(ineligibility({ ...gj, requirements: { gpuVendor: 'AMD' } }, g, opts)).toBe('GPU_VENDOR');
     expect(ineligibility({ ...gj, requirements: { minVramMb: 16000 } }, g, opts)).toBe('INSUFFICIENT_VRAM');
@@ -100,7 +100,7 @@ describe('weighted strategy', () => {
   it('keeps GPU workers free for GPU jobs', () => {
     const r = s.place([job('cpu-job')], [gpuWorker('g'), worker('c')], opts);
     expect(r.placements[0]?.workerId).toBe('c');
-    const g = s.place([job('gpu-job', { type: 'wasm-gpu', resources: { cpuCores: 1, ramMb: 512, gpu: true, vramMb: 2048, diskMb: 0 } })], [gpuWorker('g'), worker('c')], opts);
+    const g = s.place([job('gpu-job', { type: 'gpu-test', resources: { cpuCores: 1, ramMb: 512, gpu: true, vramMb: 2048, diskMb: 0 } })], [gpuWorker('g'), worker('c')], opts);
     expect(g.placements[0]?.workerId).toBe('g');
   });
 

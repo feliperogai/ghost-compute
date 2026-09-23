@@ -125,7 +125,7 @@ describe('listing & status', () => {
       state: 'available',
       online: true,
       assignments: [],
-      workloadTypes: ['wasm-cpu'],
+      workloadTypes: ['benchmark'],
       capacity: { cpuCores: 4 },
     });
     expect(one.json().lastUsage.cpuPercent).toBe(10);

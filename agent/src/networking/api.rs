@@ -138,8 +138,30 @@ pub struct HeartbeatResponse {
 pub struct Assignment {
     pub assignment_id: Uuid,
     pub job_id: Uuid,
+    /// Display only; never interpreted.
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(rename = "type")]
     pub workload_type: String,
+    #[serde(default)]
+    pub input: serde_json::Value,
+    #[serde(default)]
+    pub resources: AssignmentResources,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout() -> u64 {
+    60
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignmentResources {
+    #[serde(default)]
+    pub cpu_cores: f32,
+    #[serde(default)]
+    pub ram_mb: u64,
 }
 
 #[derive(Debug, Deserialize)]

@@ -109,7 +109,7 @@ export async function heartbeat(h: Harness, w: TestWorker, body: object = {}) {
       state: 'available',
       usage: { cpuPercent: 10, ramUsedMb: 4000, temperatureC: 50 },
       capacity: CAPACITY,
-      workloadTypes: ['wasm-cpu'],
+      workloadTypes: ['benchmark'],
       ...body,
     },
   });
@@ -120,7 +120,7 @@ export async function createJob(h: Harness, token: string, overrides: object = {
     method: 'POST',
     url: '/v1/jobs',
     headers: auth(token),
-    payload: { type: 'wasm-cpu', name: 'pi estimation', input: { samples: 1000 }, ...overrides },
+    payload: { type: 'benchmark', name: 'primes', input: { kind: 'primes', size: 1000, iterations: 1 }, ...overrides },
   });
   if (res.statusCode !== 201) throw new Error(res.body);
   return res.json();
