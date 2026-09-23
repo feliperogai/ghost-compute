@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use sysinfo::{Components, Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
@@ -13,6 +14,9 @@ pub struct Sampler {
     components: Components,
     own_pid: Pid,
     gpu: platform::GpuCounters,
+    /// Accumulated CPU time (ms) of our own processes at the previous sample.
+    prev_cpu_ms: HashMap<Pid, u64>,
+    prev_at: Option<Instant>,
 }
 
 impl Default for Sampler {
@@ -31,6 +35,8 @@ impl Sampler {
             components: Components::new_with_refreshed_list(),
             own_pid: Pid::from_u32(std::process::id()),
             gpu: platform::GpuCounters::new(),
+            prev_cpu_ms: HashMap::new(),
+            prev_at: None,
         }
     }
 
@@ -46,10 +52,8 @@ impl Sampler {
 
         let ncpu = self.sys.cpus().len().max(1) as f32;
         let tree = self.own_tree();
-        let (ghost_cpu, ghost_mem) = tree
-            .iter()
-            .filter_map(|pid| self.sys.process(*pid))
-            .fold((0.0f32, 0u64), |(c, m), p| (c + p.cpu_usage(), m + p.memory()));
+        let ghost_mem = tree.iter().filter_map(|pid| self.sys.process(*pid)).map(|p| p.memory()).sum::<u64>();
+        let ghost_cpu = self.ghost_cpu_percent(&tree, ncpu);
 
         let (gpu_percent, gpu_memory_used_mb) = self.gpu.sample();
         let processes: HashSet<String> = self
@@ -62,8 +66,7 @@ impl Sampler {
 
         Sample {
             cpu_percent: clamp_pct(self.sys.global_cpu_usage()),
-            // sysinfo reports per-process CPU as % of one core.
-            cpu_ghost_percent: clamp_pct(ghost_cpu / ncpu),
+            cpu_ghost_percent: ghost_cpu,
             ram_total_mb: self.sys.total_memory() / MB,
             ram_used_mb: self.sys.used_memory() / MB,
             ram_ghost_mb: ghost_mem / MB,
@@ -74,6 +77,33 @@ impl Sampler {
             on_battery: platform::on_battery(),
             processes: std::sync::Arc::new(processes),
         }
+    }
+
+    /// CPU used by our process tree since the last sample, as % of the whole machine.
+    ///
+    /// Computed from accumulated CPU time rather than sysinfo's per-process percentage:
+    /// on Windows that figure is wrong for a process's second refresh (its baseline is
+    /// only stored from then on), which would make every new sandbox look idle for one
+    /// sample and its load look like the owner's activity.
+    fn ghost_cpu_percent(&mut self, tree: &HashSet<Pid>, ncpu: f32) -> f32 {
+        let now = Instant::now();
+        let mut used_ms = 0u64;
+        let mut next = HashMap::with_capacity(tree.len());
+        for pid in tree {
+            let Some(p) = self.sys.process(*pid) else { continue };
+            let acc = p.accumulated_cpu_time();
+            // A process not seen before started since the last sample: all its CPU is new.
+            used_ms += acc.saturating_sub(self.prev_cpu_ms.get(pid).copied().unwrap_or(0));
+            next.insert(*pid, acc);
+        }
+        let first = self.prev_at.is_none();
+        let elapsed_ms = self.prev_at.map(|t| now.duration_since(t).as_secs_f32() * 1000.0).unwrap_or(0.0);
+        self.prev_cpu_ms = next;
+        self.prev_at = Some(now);
+        if first || elapsed_ms < 1.0 {
+            return 0.0;
+        }
+        clamp_pct(used_ms as f32 / (elapsed_ms * ncpu) * 100.0)
     }
 
     /// This process and all its descendant processes. Threads are skipped: on Linux
@@ -142,6 +172,39 @@ mod tests {
         let ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f32;
         // One busy thread ≈ 100/ncpu % of the machine; allow generous slack.
         assert!(x.cpu_ghost_percent > 40.0 / ncpu, "ghost cpu {} with {ncpu} cpus", x.cpu_ghost_percent);
+    }
+
+    #[test]
+    fn a_new_child_process_counts_from_its_first_samples() {
+        // The sandbox case: a child that starts between samples and burns CPU must be
+        // attributed to ghost immediately (not look like the owner's activity).
+        let mut s = Sampler::new();
+        s.sample();
+        let exe = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(exe)
+            .args(["--exact", "monitoring::sampler::tests::burn_helper", "--ignored", "--nocapture"])
+            .env("GHOST_BURN_MS", "1500")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let x = s.sample();
+        let _ = child.kill();
+        let _ = child.wait();
+        let ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f32;
+        assert!(x.cpu_ghost_percent > 30.0 / ncpu, "child cpu {} with {ncpu} cpus", x.cpu_ghost_percent);
+    }
+
+    /// Helper process for the test above (runs only when spawned by it).
+    #[test]
+    #[ignore]
+    fn burn_helper() {
+        let ms: u64 = std::env::var("GHOST_BURN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let end = Instant::now() + std::time::Duration::from_millis(ms);
+        let mut x = 0u64;
+        while Instant::now() < end {
+            x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(1));
+        }
     }
 
     #[test]
