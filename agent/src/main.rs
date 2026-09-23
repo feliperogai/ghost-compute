@@ -246,11 +246,29 @@ async fn run(cfg: Config) -> anyhow::Result<ExitCode> {
         let _ = shutdown_tx.send(true);
     });
 
+    let client = Arc::new(ApiClient::new(&cfg.server, Some(creds))?);
+    let sandbox_exe = ghost_agent::execution::sandbox::Sandbox::default_exe();
+    let executor = if execution::AVAILABLE && sandbox_exe.exists() {
+        let work = data_dir.join("sandbox");
+        // Leftovers from a crash: every run directory is disposable.
+        let _ = std::fs::remove_dir_all(&work);
+        info!(sandbox = %sandbox_exe.display(), types = ?execution::SUPPORTED_WORKLOAD_TYPES, "execution enabled");
+        Some(ghost_agent::execution::Executor::new(
+            client.clone(),
+            shared.clone(),
+            ghost_agent::execution::sandbox::Sandbox::new(sandbox_exe, work),
+            cfg.agent.max_concurrent_tasks as usize,
+        ))
+    } else {
+        warn!(sandbox = %sandbox_exe.display(), "sandbox binary not found; execution disabled");
+        None
+    };
     let hb = HeartbeatLoop {
-        client: Arc::new(ApiClient::new(&cfg.server, Some(creds))?),
-        policy: Policy::new(limits, execution::AVAILABLE),
+        client,
+        policy: Policy::new(limits, executor.is_some()),
         shared,
         interval: Duration::from_secs(5),
+        executor,
     };
     Ok(match hb.run(shutdown).await {
         Exit::Shutdown => {

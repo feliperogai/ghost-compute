@@ -37,7 +37,7 @@ describe('migrations', () => {
     const u = await db.query(`INSERT INTO users (email, role) VALUES ('m@x', 'admin') RETURNING id`);
     const w = await db.query(`INSERT INTO workers (name, secret_hash) VALUES ('w', '\\x00') RETURNING id`);
     const j = await db.query(
-      `INSERT INTO jobs (owner_id, type, resources, timeout_seconds, input) VALUES ($1, 'wasm-cpu', '{}', 60, '{}') RETURNING id`,
+      `INSERT INTO jobs (owner_id, type, resources, timeout_seconds, input) VALUES ($1, 'benchmark', '{}', 60, '{}') RETURNING id`,
       [u.rows[0].id],
     );
     const ins = () =>

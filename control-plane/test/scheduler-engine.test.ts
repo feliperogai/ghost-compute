@@ -50,7 +50,7 @@ const worker = (id: string, cores = 4): WorkerSnapshot => ({
   state: 'available',
   lastSeenAt: new Date(now.getTime() - 500),
   maxConcurrent: 4,
-  workloadTypes: ['wasm-cpu'],
+  workloadTypes: ['benchmark'],
   hardware: { os: { name: 'Windows' }, cpu: { cores: 8 }, ramMb: 16384, gpus: [] },
   capacity: { cpuCores: cores, ramMb: 8192, gpuPercent: 0, vramMb: 0, diskMb: 1000, maxTemperatureC: 85 },
   usage: { cpuPercent: 5, temperatureC: 50 },
@@ -61,7 +61,7 @@ const worker = (id: string, cores = 4): WorkerSnapshot => ({
 
 const job = (id: string, cores = 1): JobSpec => ({
   id,
-  type: 'wasm-cpu',
+  type: 'benchmark',
   priority: 50,
   requirements: {},
   resources: { cpuCores: cores, ramMb: 256, gpu: false, vramMb: 0, diskMb: 0 },
