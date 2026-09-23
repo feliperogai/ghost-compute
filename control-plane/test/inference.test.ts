@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { auth, heartbeat, makeUser, registerWorker, reset, setup, type Harness, type TestWorker } from './helpers.js';
+import { auth, calibrate, heartbeat, makeUser, registerWorker, reset, setup, type Harness, type TestWorker } from './helpers.js';
 import { createUserWithToken } from '../src/modules/admin/service.js';
 import { createEngine } from '../src/jobs/runner.js';
 import type { SchedulerEngine } from '../src/scheduler/index.js';
@@ -162,7 +162,13 @@ describe('inference runs', () => {
     const gpuHw = { cpu: { model: 'x', cores: 8, threads: 16, features: [] }, ramMb: 16384, os: { name: 'Windows', version: '11' },
       gpus: [{ name: 'NVIDIA GeForce RTX 3060', vendor: 'NVIDIA', vramMb: 12288 }] };
     const g = await registerWorker(h, { name: 'rtx', hardware: gpuHw, maxConcurrentTasks: 4 });
-    await heartbeat(h, g, { workloadTypes: TYPES, capacity: { cpuCores: 4, ramMb: 8192, gpuPercent: 80, vramMb: 12288, diskMb: 1000, maxTemperatureC: 85 } });
+    const gpuCap = { cpuCores: 4, ramMb: 8192, gpuPercent: 80, vramMb: 12288, diskMb: 1000, maxTemperatureC: 85 };
+    await heartbeat(h, g, { workloadTypes: TYPES, capacity: gpuCap });
+    // Listing a GPU is not enough: it must pass the calibration first.
+    await engine.tick();
+    expect((await h.rt.db.query(`SELECT pending_reason FROM jobs WHERE id = $1`, [job.id])).rows[0].pending_reason).toMatch(/GPU_NOT_CALIBRATED/);
+    await calibrate(h, g, { gpuGflops: 20_000, inferGpu: 5000 });
+    await heartbeat(h, g, { workloadTypes: TYPES, capacity: gpuCap });
     await engine.tick();
     expect((await h.rt.db.query(`SELECT worker_id FROM jobs WHERE id = $1`, [job.id])).rows[0].worker_id).toBe(g.id);
   });

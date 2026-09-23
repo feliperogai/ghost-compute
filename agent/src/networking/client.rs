@@ -211,6 +211,57 @@ impl ApiClient {
         }
     }
 
+    /// Raw upload (calibration). The server times it and checks the bytes.
+    pub async fn post_bytes(&self, path: &str, body: Vec<u8>) -> Result<serde_json::Value, ApiError> {
+        let mut forced = false;
+        loop {
+            let token = self.access_token(forced).await?;
+            let res = self
+                .http
+                .post(self.url(path))
+                .header("x-request-id", Uuid::new_v4().to_string())
+                .header("content-type", "application/octet-stream")
+                .bearer_auth(token.expose())
+                .body(body.clone())
+                .send()
+                .await
+                .map_err(ApiError::Network)?;
+            let status = res.status();
+            if status == StatusCode::UNAUTHORIZED && !forced {
+                forced = true;
+                continue;
+            }
+            if !status.is_success() {
+                let (code, message) = match res.json::<ErrorBody>().await {
+                    Ok(b) => (b.error.code, b.error.message),
+                    Err(_) => ("UNKNOWN".into(), status.canonical_reason().unwrap_or("").into()),
+                };
+                return Err(ApiError::Http { status, code, message });
+            }
+            return res.json().await.map_err(ApiError::Network);
+        }
+    }
+
+    pub async fn calibration_ping(&self) -> Result<(), ApiError> {
+        self.call::<(), serde_json::Value>(Method::GET, "/v1/worker/calibration/ping", None).await.map(|_| ())
+    }
+
+    pub async fn calibration_download(&self, id: Uuid, max: usize) -> Result<Vec<u8>, ApiError> {
+        self.get_bytes(&format!("/v1/worker/calibration/{id}/download"), max).await
+    }
+
+    pub async fn calibration_upload(&self, id: Uuid, body: Vec<u8>) -> Result<serde_json::Value, ApiError> {
+        self.post_bytes(&format!("/v1/worker/calibration/{id}/upload"), body).await
+    }
+
+    pub async fn calibration_report(
+        &self,
+        id: Uuid,
+        report: &serde_json::Value,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.call(Method::POST, &format!("/v1/worker/calibration/{id}/report"), Some(report)).await
+    }
+
     pub async fn assignment_image(&self, id: Uuid, index: u32, max: usize) -> Result<Vec<u8>, ApiError> {
         self.get_bytes(&format!("/v1/worker/assignments/{id}/images/{index}"), max).await
     }

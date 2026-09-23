@@ -65,6 +65,13 @@ Exit codes of `run`: `0` shutdown · `2` credentials rejected (re-enroll) · `3`
 - **Logs:** secrets are wrapped in `SecretString` (`[REDACTED]` in any output). The e2e script checks the logs for leaks.
 - **No command execution.** The agent has no code path that runs shell commands or server-supplied binaries.
 
+## Calibration
+
+When the control plane asks (first join, new hardware or agent, profile older than 7 days), the agent
+benchmarks itself while idle and sharing: CPU, inference (CPU/GPU), GPU matmul, storage, latency
+and bandwidth. CPU/inference/GPU tests run in the sandbox; the server only picks bounded sizes
+([ADR 005](../docs/adr/005-worker-calibration.md)).
+
 ## Tests
 
 ```bash

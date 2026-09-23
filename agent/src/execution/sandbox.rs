@@ -79,6 +79,11 @@ impl Sandbox {
         Self { exe, work_root }
     }
 
+    /// Private directory the sandboxes (and the calibration scratch file) live in.
+    pub fn work_root(&self) -> &Path {
+        &self.work_root
+    }
+
     /// `ghost-sandbox(.exe)` next to the running agent.
     pub fn default_exe() -> PathBuf {
         let name = if cfg!(windows) { "ghost-sandbox.exe" } else { "ghost-sandbox" };

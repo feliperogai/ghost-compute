@@ -35,6 +35,30 @@ export interface JobSpec {
   createdAt: Date;
   /** Workers this job must not go to (failed on it, or recently declined it). */
   excludedWorkers: string[];
+  /** Max running time of one attempt, seconds. */
+  timeoutSeconds?: number;
+  /** How much work the job carries, when the type knows (for time estimates). */
+  work?: WorkSize;
+}
+
+export interface WorkSize {
+  items: number;
+  bytes: number;
+  accelerator?: 'cpu' | 'auto' | 'gpu';
+}
+
+/**
+ * What the scheduler knows about a worker's measured speed (from its calibration
+ * profile and from real jobs). Null: never calibrated, or the calibration did not verify.
+ */
+export interface PerformanceView {
+  /** 1000 = reference machine. */
+  cpuScore: number;
+  inference: { cpuItemsPerSec: number; gpuItemsPerSec: number | null; cpuStartupMs?: number; gpuStartupMs?: number | null };
+  gpu: { verified: boolean; vramAvailableMb: number | null; nvidia: boolean } | null;
+  network: { latencyMs: number; downloadMbps: number | null };
+  /** Throughput seen on real jobs of each type (EWMA). */
+  observed: Record<string, { itemsPerSec: number; samples: number }>;
 }
 
 /** What a worker offers to the network (owner limits applied by the agent). */
@@ -68,6 +92,8 @@ export interface WorkerSnapshot {
   activeAssignments: number;
   /** Recent outcomes on this worker, for reliability scoring. */
   recent: { completed: number; failed: number };
+  /** Measured performance; absent/null until the worker is calibrated. */
+  performance?: PerformanceView | null;
 }
 
 export type IneligibleReason =
@@ -80,6 +106,9 @@ export type IneligibleReason =
   | 'INSUFFICIENT_CPU'
   | 'INSUFFICIENT_RAM'
   | 'NO_GPU'
+  | 'GPU_NOT_CALIBRATED'
+  | 'GPU_UNVERIFIED'
+  | 'TOO_SLOW'
   | 'GPU_VENDOR'
   | 'INSUFFICIENT_VRAM'
   | 'INSUFFICIENT_DISK'

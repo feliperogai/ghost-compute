@@ -130,6 +130,68 @@ pub struct HeartbeatResponse {
     pub cancel_assignment_ids: Vec<Uuid>,
     #[serde(default)]
     pub assignments: Vec<Assignment>,
+    /// The server asks for benchmarks (on join, after hardware/agent changes).
+    #[serde(default)]
+    pub calibration: Option<CalibrationRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CalibrationRequest {
+    pub id: Uuid,
+    pub nonce: String,
+    #[serde(default)]
+    pub reason: String,
+    pub params: CalibrationParams,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CalibrationParams {
+    pub cpu: Vec<CpuTest>,
+    pub parallel: ParallelTest,
+    pub inference: InferenceTest,
+    pub gpu: GpuTest,
+    pub network: NetworkTest,
+    pub storage: StorageTest,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct CpuTest {
+    pub kind: String,
+    pub size: i64,
+    pub iterations: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParallelTest {
+    pub max_sandboxes: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct InferenceTest {
+    pub images: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuTest {
+    pub size: u32,
+    pub max_iterations: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkTest {
+    pub pings: u32,
+    pub download_bytes: u64,
+    pub upload_bytes: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct StorageTest {
+    pub bytes: u64,
 }
 
 /// Only the fields the agent needs right now; the rest is ignored.

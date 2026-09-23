@@ -33,7 +33,7 @@ export async function setup(overrides: Record<string, string> = {}): Promise<Har
 
 export async function reset(rt: Runtime) {
   await rt.db.query(
-    `TRUNCATE audit_log, job_events, job_assignments, jobs, job_groups, dataset_images, datasets, enrollment_tokens,
+    `TRUNCATE audit_log, worker_performance, worker_calibrations, job_events, job_assignments, jobs, job_groups, dataset_images, datasets, enrollment_tokens,
               workers, api_tokens, users CASCADE`,
   );
   await rt.redis.flushdb();
@@ -125,4 +125,28 @@ export async function createJob(h: Harness, token: string, overrides: object = {
   });
   if (res.statusCode !== 201) throw new Error(res.body);
   return res.json();
+}
+
+/** Runs the calibration protocol as an agent would, with a synthetic report. */
+export async function calibrate(h: Harness, w: TestWorker, speeds: import('./calibration-fixtures.js').Speeds = {}) {
+  const { syntheticReport } = await import('./calibration-fixtures.js');
+  const { streamBytes } = await import('../src/performance/stream.js');
+  const hb = await heartbeat(h, w, { workloadTypes: ['benchmark', 'image-inference'], agentVersion: '0.1.0' });
+  const req = hb.json().calibration;
+  if (!req) throw new Error(`no calibration requested: ${hb.body}`);
+  const up = await h.app.inject({
+    method: 'POST',
+    url: `/v1/worker/calibration/${req.id}/upload`,
+    headers: { ...auth(w.token), 'content-type': 'application/octet-stream' },
+    payload: streamBytes(req.nonce, req.params.network.uploadBytes),
+  });
+  if (up.statusCode !== 200) throw new Error(up.body);
+  const rep = await h.app.inject({
+    method: 'POST',
+    url: `/v1/worker/calibration/${req.id}/report`,
+    headers: auth(w.token),
+    payload: syntheticReport(req.params, req.nonce, speeds),
+  });
+  if (rep.statusCode !== 200) throw new Error(rep.body);
+  return { request: req, result: rep.json() };
 }

@@ -57,10 +57,14 @@ fn main() -> ExitCode {
     };
     // Parameters were validated by the agent; re-validate here: never trust the channel.
     let json = serde_json::to_value(&req.workload).unwrap_or_default();
-    let workload = match Workload::parse(json["type"].as_str().unwrap_or(""), &json["params"]) {
+    // parse_local: the sandbox only ever talks to its own agent, which also sends internal probes.
+    let workload = match Workload::parse_local(json["type"].as_str().unwrap_or(""), &json["params"]) {
         Ok(w) => w,
         Err(e) => return fail("REJECTED", e.to_string()),
     };
+    if let Workload::GpuProbe(p) = &workload {
+        return gpu_probe(&req, p);
+    }
     let module = match workload.module() {
         Ok(m) => m,
         Err(e) => return fail("INTEGRITY", e.to_string()),
@@ -75,6 +79,7 @@ fn main() -> ExitCode {
         Workload::ImageInference(p) => {
             return image_inference(&req, p, module, limits, workload.module_sha256(), &mut stdin);
         }
+        Workload::GpuProbe(_) => unreachable!("handled above"),
     };
     let mut last = -1.0f32;
     let started = Instant::now();
@@ -304,4 +309,35 @@ fn flush_gpu(
         emit(&Event::Item { item: InferenceItem::predicted(index, &inference::softmax(&z), k) });
     }
     Ok(())
+}
+
+/// Calibration: our fixed matmul shader, timed; the checksum proves the result is right.
+fn gpu_probe(req: &Request, p: &ghost_agent::execution::registry::GpuProbeParams) -> ExitCode {
+    if req.gpu == GpuMode::Off {
+        return fail("GPU_OFF", "the owner does not share a GPU");
+    }
+    #[cfg(feature = "gpu")]
+    {
+        let target = Duration::from_millis(300).min(Duration::from_millis(req.deadline_ms / 2));
+        match ghost_agent::execution::gpu::matmul_probe(p.size, p.max_iterations, target, req.gpu == GpuMode::Any) {
+            Ok(r) => {
+                emit(&Event::Done {
+                    output: serde_json::json!({
+                        "device": r.device,
+                        "nvidia": r.nvidia,
+                        "iterations": r.iterations,
+                        "elapsedMs": (r.elapsed.as_millis() as u64).max(1),
+                        "checksum": r.checksum.to_string(),
+                    }),
+                });
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail("GPU", e),
+        }
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        let _ = p;
+        fail("GPU", "gpu support not built")
+    }
 }
