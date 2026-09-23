@@ -49,7 +49,7 @@ migrations/            SQL versionado
 
 **Fonte de verdade:** Postgres. Redis guarda o índice da fila de jobs, o barramento de eventos e o lock de líder do scheduler. Se o Redis perder dados, o scheduler reconstrói o índice a partir do Postgres.
 
-**Jobs e scheduler:** ver [ADR 002](../docs/adr-002-job-model-and-scheduler.md).
+**Jobs e scheduler:** ver [ADR 002](../docs/adr/002-job-model-and-scheduler.md).
 
 ```
 src/scheduler/   algoritmo (puro, substituível): elegibilidade, estratégia, retry, engine

@@ -5,7 +5,7 @@ applies the owner's limits and talks to the control plane over HTTPS.
 
 **Done:** hardware detection, monitoring, heartbeat, secure communication, local IPC
 for the desktop app, and **isolated execution** of registered workloads (see
-[ADR 003](../docs/adr-003-isolated-execution.md)).
+[ADR 003](../docs/adr/003-isolated-execution.md)).
 **Next:** AppContainer for the sandbox process, Windows service mode, self-update.
 
 ## Execution
