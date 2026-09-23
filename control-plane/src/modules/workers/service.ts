@@ -4,19 +4,22 @@ import { audit } from '../../audit.js';
 import { generateSecret, hashSecret, hasPrefix, safeEqual, signWorkerToken } from '../../auth/crypto.js';
 import { AppError, conflict, notFound, unauthorized } from '../../errors.js';
 import type { Hardware } from '../schemas.js';
-import { LeaseService, type Offer } from '../leases/service.js';
+import { JobLifecycle, type AssignmentOffer } from '../../jobs/lifecycle.js';
+import type { Capacity } from '../../scheduler/types.js';
 
 export type ReportedState = 'waiting' | 'available' | 'running' | 'paused' | 'stopped';
 
 export interface HeartbeatInput {
   state: ReportedState;
   usage: Record<string, number | boolean | undefined>;
-  activeLeaseIds: string[];
+  activeAssignmentIds: string[];
+  capacity?: Capacity | undefined;
+  workloadTypes?: string[] | undefined;
   agentVersion?: string | undefined;
 }
 
 const WORKER_COLUMNS = `id, name, device_id, owner_user_id, status, state, max_concurrent_tasks, hardware, last_usage,
-  agent_version, last_seen_at, created_at, revoked_at, revoked_reason`;
+  capacity, workload_types, agent_version, last_seen_at, created_at, revoked_at, revoked_reason`;
 
 export function toWorkerDto(r: Record<string, any>) {
   return {
@@ -29,20 +32,22 @@ export function toWorkerDto(r: Record<string, any>) {
     maxConcurrentTasks: r.max_concurrent_tasks,
     hardware: r.hardware,
     lastUsage: r.last_usage,
+    capacity: r.capacity ?? null,
+    workloadTypes: r.workload_types ?? [],
     agentVersion: r.agent_version,
     lastSeenAt: r.last_seen_at?.toISOString() ?? null,
     createdAt: r.created_at.toISOString(),
     revokedAt: r.revoked_at?.toISOString() ?? null,
     revokedReason: r.revoked_reason,
-    activeLeases: r.active_leases ?? undefined,
+    activeAssignments: r.active_assignments ?? undefined,
   };
 }
 
 export class WorkerService {
-  private readonly leases: LeaseService;
+  private readonly jobs: JobLifecycle;
 
   constructor(private readonly ctx: AppContext) {
-    this.leases = new LeaseService(ctx);
+    this.jobs = new JobLifecycle(ctx);
   }
 
   async register(input: {
@@ -133,18 +138,18 @@ export class WorkerService {
       });
       return w.rows[0];
     });
-    // Results from a revoked worker are not trusted: requeue without counting an attempt.
-    const released = await this.leases.releaseWorker(workerId, { kind: 'cancelled', reason: 'worker revoked' });
+    // Its running jobs are re-routed; results it may still send are refused (worker no longer authenticates).
+    const released = await this.jobs.releaseWorker(workerId, 'worker revoked');
     await this.ctx.bus.sendToWorker(workerId, { type: 'worker.revoked', reason });
-    await this.ctx.bus.publish('worker.revoked', { workerId, reason, releasedLeases: released.length });
+    await this.ctx.bus.publish('worker.revoked', { workerId, reason, releasedAssignments: released });
     return toWorkerDto(worker);
   }
 
   async list(f: { status?: string | undefined; state?: string | undefined; limit: number; offset: number }) {
     const { rows } = await this.ctx.db.query(
       `SELECT ${WORKER_COLUMNS},
-              (SELECT count(*)::int FROM leases l WHERE l.worker_id = w.id AND l.status IN ('offered', 'running'))
-                AS active_leases,
+              (SELECT count(*)::int FROM job_assignments a WHERE a.worker_id = w.id AND a.status IN ('assigned', 'running'))
+                AS active_assignments,
               count(*) OVER ()::int AS total
          FROM workers w
         WHERE ($1::text IS NULL OR status = $1) AND ($2::text IS NULL OR state = $2)
@@ -158,25 +163,27 @@ export class WorkerService {
   async get(workerId: string) {
     const { rows } = await this.ctx.db.query(`SELECT ${WORKER_COLUMNS} FROM workers WHERE id = $1`, [workerId]);
     if (!rows[0]) throw notFound('Worker');
-    const leases = await this.ctx.db.query(
-      `SELECT l.id, l.task_id, t.job_id, l.status, l.progress, l.stage, l.offered_at, l.accepted_at, l.expires_at
-         FROM leases l JOIN tasks t ON t.id = l.task_id
-        WHERE l.worker_id = $1 AND l.status IN ('offered', 'running') ORDER BY l.offered_at`,
+    const active = await this.ctx.db.query(
+      `SELECT a.id, a.job_id, a.status, a.attempt, a.assigned_at, a.started_at, a.last_seen_at, j.type, j.name, j.progress, j.stage
+         FROM job_assignments a JOIN jobs j ON j.id = a.job_id
+        WHERE a.worker_id = $1 AND a.status IN ('assigned', 'running') ORDER BY a.assigned_at`,
       [workerId],
     );
     return {
       ...toWorkerDto(rows[0]),
       online: rows[0].state !== 'offline',
-      leases: leases.rows.map((l) => ({
-        id: l.id,
-        taskId: l.task_id,
-        jobId: l.job_id,
-        status: l.status,
-        progress: l.progress,
-        stage: l.stage,
-        offeredAt: l.offered_at.toISOString(),
-        acceptedAt: l.accepted_at?.toISOString() ?? null,
-        expiresAt: l.expires_at.toISOString(),
+      assignments: active.rows.map((a) => ({
+        id: a.id,
+        jobId: a.job_id,
+        jobName: a.name,
+        type: a.type,
+        status: a.status,
+        attempt: a.attempt,
+        progress: a.progress,
+        stage: a.stage,
+        assignedAt: a.assigned_at.toISOString(),
+        startedAt: a.started_at?.toISOString() ?? null,
+        lastSeenAt: a.last_seen_at?.toISOString() ?? null,
       })),
     };
   }
@@ -187,45 +194,45 @@ export class WorkerService {
    */
   async stats(workerId: string, recentLimit: number) {
     const totals = await this.ctx.db.query<{
-      succeeded: number;
+      completed: number;
       failed: number;
-      preempted: number;
+      interrupted: number;
       active: number;
       seconds: number;
     }>(
-      `SELECT count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
-              count(*) FILTER (WHERE status = 'failed')::int AS failed,
-              count(*) FILTER (WHERE status = 'preempted')::int AS preempted,
-              count(*) FILTER (WHERE status IN ('offered', 'running'))::int AS active,
-              COALESCE(sum(EXTRACT(EPOCH FROM finished_at - accepted_at))
-                         FILTER (WHERE status = 'succeeded' AND accepted_at IS NOT NULL), 0)::float AS seconds
-         FROM leases WHERE worker_id = $1`,
+      `SELECT count(*) FILTER (WHERE status = 'completed')::int AS completed,
+              count(*) FILTER (WHERE status IN ('failed', 'timeout'))::int AS failed,
+              count(*) FILTER (WHERE status IN ('lost', 'expired'))::int AS interrupted,
+              count(*) FILTER (WHERE status IN ('assigned', 'running'))::int AS active,
+              COALESCE(sum(EXTRACT(EPOCH FROM finished_at - started_at))
+                         FILTER (WHERE status = 'completed' AND started_at IS NOT NULL), 0)::float AS seconds
+         FROM job_assignments WHERE worker_id = $1`,
       [workerId],
     );
     const recent = await this.ctx.db.query(
-      `SELECT l.id, l.status, l.progress, l.stage, l.offered_at, l.accepted_at, l.finished_at,
-              t.idx, j.id AS job_id, j.name AS job_name, j.module_name, j.module_version
-         FROM leases l JOIN tasks t ON t.id = l.task_id JOIN jobs j ON j.id = t.job_id
-        WHERE l.worker_id = $1 AND l.status NOT IN ('rejected')
-        ORDER BY l.offered_at DESC LIMIT $2`,
+      `SELECT a.id, a.status, a.attempt, a.assigned_at, a.started_at, a.finished_at,
+              j.id AS job_id, j.name, j.type, j.progress, j.stage
+         FROM job_assignments a JOIN jobs j ON j.id = a.job_id
+        WHERE a.worker_id = $1 AND a.status <> 'rejected'
+        ORDER BY a.assigned_at DESC LIMIT $2`,
       [workerId, recentLimit],
     );
     const t = totals.rows[0]!;
     return {
-      tasks: { succeeded: t.succeeded, failed: t.failed, preempted: t.preempted, active: t.active },
+      tasks: { succeeded: t.completed, failed: t.failed, preempted: t.interrupted, active: t.active },
       computeSeconds: Math.round(t.seconds),
       credits: Math.round((t.seconds / 60) * 100) / 100,
       recent: recent.rows.map((r) => ({
-        leaseId: r.id,
+        assignmentId: r.id,
         jobId: r.job_id,
-        jobName: r.job_name,
-        module: { name: r.module_name, version: r.module_version },
-        taskIndex: r.idx,
+        jobName: r.name ?? r.type,
+        type: r.type,
+        attempt: r.attempt,
         status: r.status,
         progress: r.progress,
         stage: r.stage,
-        offeredAt: r.offered_at.toISOString(),
-        acceptedAt: r.accepted_at?.toISOString() ?? null,
+        assignedAt: r.assigned_at.toISOString(),
+        startedAt: r.started_at?.toISOString() ?? null,
         finishedAt: r.finished_at?.toISOString() ?? null,
       })),
     };
@@ -234,16 +241,18 @@ export class WorkerService {
   async heartbeat(workerId: string, hb: HeartbeatInput) {
     const { rows } = await this.ctx.db.query<{ prev_state: string; state: string }>(
       `UPDATE workers w SET state = $2, last_usage = $3, last_seen_at = now(),
-              agent_version = COALESCE($4, w.agent_version)
+              agent_version = COALESCE($4, w.agent_version),
+              capacity = COALESCE($5, w.capacity),
+              workload_types = COALESCE($6, w.workload_types)
          FROM (SELECT state AS prev_state FROM workers WHERE id = $1 FOR UPDATE) p
         WHERE w.id = $1 AND w.status = 'active'
         RETURNING p.prev_state, w.state`,
-      [workerId, hb.state, hb.usage, hb.agentVersion ?? null],
+      [workerId, hb.state, hb.usage, hb.agentVersion ?? null, hb.capacity ?? null, hb.workloadTypes ?? null],
     );
     const row = rows[0];
     if (!row) throw new AppError(403, 'WORKER_REVOKED', 'Worker has been revoked');
 
-    const cancelLeaseIds = await this.leases.extendRunning(workerId, hb.activeLeaseIds);
+    const cancelAssignmentIds = await this.jobs.touch(workerId, hb.activeAssignmentIds);
 
     if (row.prev_state !== row.state) {
       const type = row.prev_state === 'offline' ? 'worker.online' : 'worker.state';
@@ -251,16 +260,16 @@ export class WorkerService {
     }
     await this.ctx.bus.publish('worker.heartbeat', { workerId, state: hb.state, usage: hb.usage });
 
-    const offers: Offer[] = await this.leases.pendingOffers(workerId);
+    const assignments: AssignmentOffer[] = await this.jobs.pendingFor(workerId);
     return {
       serverTime: new Date().toISOString(),
       heartbeatIntervalSeconds: this.ctx.config.HEARTBEAT_INTERVAL_SECONDS,
-      cancelLeaseIds,
-      offers,
+      cancelAssignmentIds,
+      assignments,
     };
   }
 
-  /** Marks silent workers offline and releases their leases. */
+  /** Marks silent workers offline; their jobs are re-routed. */
   async detectOffline(): Promise<string[]> {
     const { rows } = await this.ctx.db.query<{ id: string }>(
       `UPDATE workers SET state = 'offline'
@@ -270,8 +279,8 @@ export class WorkerService {
       [this.ctx.config.WORKER_OFFLINE_AFTER_SECONDS],
     );
     for (const { id } of rows) {
-      const released = await this.leases.releaseWorker(id, { kind: 'expired' });
-      await this.ctx.bus.publish('worker.offline', { workerId: id, releasedLeases: released.length });
+      const released = await this.jobs.releaseWorker(id, 'worker went offline');
+      await this.ctx.bus.publish('worker.offline', { workerId: id, releasedAssignments: released });
     }
     return rows.map((r) => r.id);
   }

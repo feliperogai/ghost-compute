@@ -212,9 +212,9 @@ th { text-align: left; font-weight: 500; color: var(--ink-3); font-size: 12px; p
 td { padding: 10px var(--s2) 10px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
 tr:last-child td { border-bottom: 0; }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--well); color: var(--ink-2); }
-.pill.succeeded { background: var(--ghost-soft); color: var(--ghost-ink); }
-.pill.failed { background: var(--alarm-soft); color: var(--alarm); }
-.pill.preempted, .pill.expired { background: var(--heat-soft); color: var(--heat); }
+.pill.completed { background: var(--ghost-soft); color: var(--ghost-ink); }
+.pill.failed, .pill.timeout { background: var(--alarm-soft); color: var(--alarm); }
+.pill.lost, .pill.expired { background: var(--heat-soft); color: var(--heat); }
 .empty { color: var(--ink-3); padding: var(--s4) 0; text-align: center; }
 
 /* ---- settings ---- */

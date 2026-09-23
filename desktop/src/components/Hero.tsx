@@ -61,11 +61,11 @@ export function Hero({ status, pending, onControl }: Props) {
       {status.workloads.map((w) => {
         const elapsed = (Date.parse(status.generatedAt) - Date.parse(w.startedAt)) / 1000;
         return (
-          <div className="workload" key={w.leaseId} data-testid="active-workload">
+          <div className="workload" key={w.assignmentId} data-testid="active-workload">
             <div>
               <div className="workload-title">{w.jobName}</div>
               <div className="workload-meta">
-                Módulo {w.module.name} {w.module.version}
+                Tipo {w.type}
                 {w.stage ? ` · ${w.stage}` : ''} · rodando há {duration(Math.max(0, elapsed))} · isolado em sandbox
               </div>
             </div>

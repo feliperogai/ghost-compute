@@ -140,12 +140,13 @@ export function headline(s: Status): Headline {
 export function taskStatusText(status: string): string {
   return (
     {
-      offered: 'Oferecido',
+      assigned: 'Atribuído',
       running: 'Executando',
-      succeeded: 'Concluído',
+      completed: 'Concluído',
       failed: 'Falhou',
-      preempted: 'Interrompido',
-      expired: 'Expirou',
+      timeout: 'Tempo esgotado',
+      lost: 'Interrompido',
+      expired: 'Não aceito a tempo',
       cancelled: 'Cancelado',
     } as Record<string, string>
   )[status] ?? status;

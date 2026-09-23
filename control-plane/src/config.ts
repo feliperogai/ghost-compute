@@ -13,16 +13,22 @@ const envSchema = z.object({
   HEARTBEAT_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(300).default(5),
   /** Worker is offline after this many seconds without heartbeat. */
   WORKER_OFFLINE_AFTER_SECONDS: z.coerce.number().int().min(3).max(3600).default(20),
-  /** Seconds a worker has to accept an offer. */
-  LEASE_OFFER_TTL_SECONDS: z.coerce.number().int().min(5).max(600).default(30),
-  /** Running lease is extended by this much on each heartbeat/progress. */
-  LEASE_RUNNING_TTL_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
+  /** Seconds a worker has to accept an assignment before it is re-routed. */
+  ASSIGNMENT_ACCEPT_SECONDS: z.coerce.number().int().min(5).max(600).default(30),
+  /** A running assignment not reported by heartbeat/progress for this long is considered lost. */
+  ASSIGNMENT_STALE_SECONDS: z.coerce.number().int().min(10).max(3600).default(45),
+  /** Placement algorithm (see src/scheduler/strategies). */
+  SCHEDULER_STRATEGY: z.string().default('weighted'),
+  /** Queued jobs considered per scheduling pass. */
+  SCHEDULER_BATCH: z.coerce.number().int().min(1).max(5000).default(200),
+  /** Do not place new work on workers within this many °C of their owner's limit. */
+  THERMAL_MARGIN_C: z.coerce.number().min(0).max(30).default(3),
+  JOB_DEFAULT_TIMEOUT_SECONDS: z.coerce.number().int().min(10).max(604_800).default(3600),
   SCHEDULER_TICK_MS: z.coerce.number().int().min(50).max(60_000).default(1000),
   SCHEDULER_ENABLED: z
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
-  MAX_TASKS_PER_JOB: z.coerce.number().int().min(1).max(100_000).default(10_000),
   MAX_BODY_BYTES: z.coerce.number().int().min(1024).default(1_048_576),
 });
 
