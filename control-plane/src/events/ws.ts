@@ -3,7 +3,7 @@ import type { WebSocket } from 'ws';
 import { z } from 'zod';
 import type { AppContext } from '../context.js';
 import { bearer, resolveUserToken, resolveWorkerToken, type Principal } from '../auth/plugin.js';
-import { LeaseService } from '../modules/leases/service.js';
+import { JobLifecycle } from '../jobs/lifecycle.js';
 import type { PlatformEvent } from './bus.js';
 
 export const WS_CLOSE = {
@@ -37,10 +37,10 @@ async function resolve(ctx: AppContext, token: string): Promise<Principal | null
  * Auth: `Authorization: Bearer <token>` header, or first message {type:"auth", token}
  * (browsers cannot set headers on WebSocket). Tokens are never read from the URL.
  *  - users   receive platform events ({type:"event", event}); may narrow with "subscribe".
- *  - workers receive task offers, lease cancellations and revocation notices.
+ *  - workers receive job assignments, assignment cancellations and revocation notices.
  */
 export function registerWebSocket(app: FastifyInstance, ctx: AppContext) {
-  const leases = new LeaseService(ctx);
+  const jobs = new JobLifecycle(ctx);
 
   app.get('/v1/ws', { websocket: true }, (socket: WebSocket, req: FastifyRequest) => {
     const log = req.log.child({ ws: true });
@@ -82,8 +82,8 @@ export function registerWebSocket(app: FastifyInstance, ctx: AppContext) {
           if (msg.type === 'worker.revoked') socket.close(WS_CLOSE.REVOKED, 'revoked');
         });
         send({ type: 'ready', principal: { kind: 'worker', id: p.workerId } });
-        // Replay offers made while disconnected.
-        for (const offer of await leases.pendingOffers(p.workerId)) send({ type: 'task.offer', offer });
+        // Replay assignments made while disconnected.
+        for (const assignment of await jobs.pendingFor(p.workerId)) send({ type: 'job.assigned', assignment });
       }
     };
 

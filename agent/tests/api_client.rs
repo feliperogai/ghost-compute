@@ -24,14 +24,23 @@ fn hb() -> HeartbeatRequest {
             user_idle_seconds: None,
             on_battery: None,
         },
-        active_lease_ids: vec![],
+        active_assignment_ids: vec![],
+        capacity: ghost_agent::networking::api::Capacity {
+            cpu_cores: 2.0,
+            ram_mb: 2048,
+            gpu_percent: 0.0,
+            vram_mb: 0,
+            disk_mb: 1024,
+            max_temperature_c: 85.0,
+        },
+        workload_types: vec![],
         agent_version: "test".into(),
     }
 }
 
 fn hb_ok() -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({
-        "serverTime": "2026-01-01T00:00:00Z", "heartbeatIntervalSeconds": 5, "cancelLeaseIds": [], "offers": []
+        "serverTime": "2026-01-01T00:00:00Z", "heartbeatIntervalSeconds": 5, "cancelAssignmentIds": [], "assignments": []
     }))
 }
 

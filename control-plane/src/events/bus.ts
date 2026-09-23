@@ -13,8 +13,8 @@ export interface PlatformEvent {
 
 /** Message addressed to a single worker. */
 export type WorkerMessage =
-  | { type: 'task.offer'; offer: Record<string, unknown> }
-  | { type: 'lease.cancel'; leaseId: string; reason: string }
+  | { type: 'job.assigned'; assignment: Record<string, unknown> }
+  | { type: 'assignment.cancel'; assignmentId: string; reason: string }
   | { type: 'worker.revoked'; reason: string };
 
 /**

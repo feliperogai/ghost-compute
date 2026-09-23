@@ -40,9 +40,9 @@ async fn mount_auth(s: &MockServer) {
         .await;
 }
 
-fn hb_body(offers: serde_json::Value) -> ResponseTemplate {
+fn hb_body(assignments: serde_json::Value) -> ResponseTemplate {
     ResponseTemplate::new(200)
-        .set_body_json(json!({ "heartbeatIntervalSeconds": 1, "cancelLeaseIds": [], "offers": offers }))
+        .set_body_json(json!({ "heartbeatIntervalSeconds": 1, "cancelAssignmentIds": [], "assignments": assignments }))
 }
 
 struct Rig {
@@ -91,18 +91,21 @@ async fn mount_stats(s: &MockServer) {
 }
 
 #[tokio::test]
-async fn reports_usage_declines_offers_and_says_goodbye() {
+async fn reports_usage_capacity_declines_assignments_and_says_goodbye() {
     let s = MockServer::start().await;
     mount_auth(&s).await;
-    let lease = Uuid::new_v4();
+    let assignment = Uuid::new_v4();
     // First heartbeat carries a stale offer; later ones do not.
     Mock::given(path("/v1/worker/heartbeat"))
         .and(body_partial_json(json!({
             "state": "waiting",
             "usage": { "cpuPercent": 12.0, "cpuGhostPercent": 2.0, "ramUsedMb": 6000, "temperatureC": 51.0, "onBattery": false },
-            "activeLeaseIds": []
+            "activeAssignmentIds": [],
+            // Owner limits turned into an offer; no workload types until an executor exists.
+            "capacity": { "ramMb": 2048, "gpuPercent": 0.0, "maxTemperatureC": 85.0 },
+            "workloadTypes": []
         })))
-        .respond_with(hb_body(json!([{ "leaseId": lease, "taskId": Uuid::new_v4(), "jobId": Uuid::new_v4() }])))
+        .respond_with(hb_body(json!([{ "assignmentId": assignment, "jobId": Uuid::new_v4(), "type": "wasm-cpu" }])))
         .up_to_n_times(1)
         .expect(1)
         .mount(&s)
@@ -113,7 +116,7 @@ async fn reports_usage_declines_offers_and_says_goodbye() {
         .mount(&s)
         .await;
     Mock::given(method("POST"))
-        .and(path(format!("/v1/worker/leases/{lease}/reject")))
+        .and(path(format!("/v1/worker/assignments/{assignment}/reject")))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
         .expect(1)
         .mount(&s)

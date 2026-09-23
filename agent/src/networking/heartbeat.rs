@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
-use super::api::{HeartbeatRequest, Usage};
+use super::api::{Capacity, HeartbeatRequest, Usage};
 use super::backoff::Backoff;
 use super::client::{AGENT_VERSION, ApiClient, ApiError};
 use crate::runtime::{ConnectionStatus, Shared};
@@ -56,14 +56,16 @@ impl HeartbeatLoop {
                     backoff.reset();
                     self.shared.connected();
                     self.interval = Duration::from_secs(res.heartbeat_interval_seconds.clamp(1, 300));
-                    for id in &res.cancel_lease_ids {
-                        debug!(lease_id = %id, "server cancelled lease (nothing running)");
+                    for id in &res.cancel_assignment_ids {
+                        debug!(assignment_id = %id, "server cancelled assignment (nothing running)");
                     }
-                    for offer in &res.offers {
-                        // No executor in this build: decline so the task goes back to the queue.
-                        match self.client.reject_lease(offer.lease_id, "execution not available on this agent").await {
-                            Ok(()) => info!(lease_id = %offer.lease_id, "declined offer"),
-                            Err(e) => warn!(lease_id = %offer.lease_id, error = %e, "failed to decline offer"),
+                    for a in &res.assignments {
+                        // Declared types are empty while no executor exists, so the scheduler should
+                        // not send any; decline defensively so the job is re-routed at once.
+                        let id = a.assignment_id;
+                        match self.client.reject_assignment(id, "execution not available on this agent").await {
+                            Ok(()) => info!(assignment_id = %id, job_id = %a.job_id, "declined assignment"),
+                            Err(e) => warn!(assignment_id = %id, error = %e, "failed to decline assignment"),
                         }
                     }
                     if last_stats.is_none_or(|t| t.elapsed() >= STATS_REFRESH) {
@@ -125,6 +127,13 @@ impl HeartbeatLoop {
         usage.user_idle_seconds = self.shared.presence_view(Instant::now()).idle_secs.or(snap.latest.user_idle_secs);
         usage.on_battery = snap.latest.on_battery;
         usage.temperature_c = snap.max_temperature_c.map(|t| t.clamp(-50.0, 150.0));
-        HeartbeatRequest { state, usage, active_lease_ids: vec![], agent_version: AGENT_VERSION.into() }
+        HeartbeatRequest {
+            state,
+            usage,
+            active_assignment_ids: vec![],
+            capacity: Capacity::offered(self.policy.limits(), &self.shared.hardware),
+            workload_types: crate::execution::SUPPORTED_WORKLOAD_TYPES.iter().map(|t| t.to_string()).collect(),
+            agent_version: AGENT_VERSION.into(),
+        }
     }
 }

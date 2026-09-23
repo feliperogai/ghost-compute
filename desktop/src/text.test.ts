@@ -18,10 +18,10 @@ describe('headline', () => {
     const running = with_({
       workloads: [
         {
-          leaseId: 'l',
+          assignmentId: 'l',
           jobId: 'j',
           jobName: 'Render',
-          module: { name: 'blender', version: '4.2.0' },
+          type: 'wasm-cpu',
           progress: 0.42,
           stage: null,
           startedAt: '2026-01-01T00:00:00Z',

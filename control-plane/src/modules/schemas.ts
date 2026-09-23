@@ -23,25 +23,6 @@ export const hardwareSchema = z.object({
 });
 export type Hardware = z.infer<typeof hardwareSchema>;
 
-export const requirementsSchema = z
-  .object({
-    minCpuCores: z.number().int().min(1).max(1024).optional(),
-    minRamMb: z.number().int().min(1).optional(),
-    cpuFeatures: z.array(z.string().max(32)).max(32).optional(),
-  })
-  .strict();
-export type Requirements = z.infer<typeof requirementsSchema>;
-
-export function matchesRequirements(req: Requirements, hw: Partial<Hardware>): boolean {
-  if (req.minCpuCores && (hw.cpu?.cores ?? 0) < req.minCpuCores) return false;
-  if (req.minRamMb && (hw.ramMb ?? 0) < req.minRamMb) return false;
-  if (req.cpuFeatures?.length) {
-    const have = new Set((hw.cpu?.features ?? []).map((f) => f.toLowerCase()));
-    if (!req.cpuFeatures.every((f) => have.has(f.toLowerCase()))) return false;
-  }
-  return true;
-}
-
 /** Arbitrary JSON bounded by serialized size. */
 export const boundedJson = (maxBytes: number) =>
   z.unknown().refine((v) => v !== undefined && Buffer.byteLength(JSON.stringify(v)) <= maxBytes, {

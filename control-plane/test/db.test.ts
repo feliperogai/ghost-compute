@@ -28,27 +28,27 @@ describe('migrations', () => {
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY 1`,
     );
     expect(rows.map((r) => r.table_name)).toEqual(
-      expect.arrayContaining(['users', 'workers', 'jobs', 'tasks', 'leases', 'task_events', 'audit_log']),
+      expect.arrayContaining(['users', 'workers', 'jobs', 'job_assignments', 'job_events', 'audit_log']),
     );
   });
 
-  it('allows only one active lease per task', async () => {
+  it('allows only one active assignment per job', async () => {
     await migrate(db);
     const u = await db.query(`INSERT INTO users (email, role) VALUES ('m@x', 'admin') RETURNING id`);
     const w = await db.query(`INSERT INTO workers (name, secret_hash) VALUES ('w', '\\x00') RETURNING id`);
     const j = await db.query(
-      `INSERT INTO jobs (name, module_name, module_version, total_tasks, created_by)
-       VALUES ('j', 'm', '1', 1, $1) RETURNING id`,
+      `INSERT INTO jobs (owner_id, type, resources, timeout_seconds, input) VALUES ($1, 'wasm-cpu', '{}', 60, '{}') RETURNING id`,
       [u.rows[0].id],
     );
-    const t = await db.query(`INSERT INTO tasks (job_id, idx) VALUES ($1, 0) RETURNING id`, [j.rows[0].id]);
     const ins = () =>
-      db.query(`INSERT INTO leases (task_id, worker_id, expires_at) VALUES ($1, $2, now())`, [
-        t.rows[0].id,
-        w.rows[0].id,
-      ]);
+      db.query(
+        `INSERT INTO job_assignments (job_id, worker_id, attempt, strategy, score, score_detail, reserved, accept_deadline)
+         VALUES ($1, $2, 1, 's', 0, '{}', '{}', now())`,
+        [j.rows[0].id, w.rows[0].id],
+      );
     await ins();
-    await expect(ins()).rejects.toThrow(/leases_one_active_per_task/);
+    await expect(ins()).rejects.toThrow(/job_assignments_one_active/);
+    await expect(db.query(`UPDATE jobs SET status = 'DONE'`)).rejects.toThrow(/check/);
     await db.query(`TRUNCATE users, workers, jobs CASCADE`);
   });
 });

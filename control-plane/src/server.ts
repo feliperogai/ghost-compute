@@ -1,7 +1,7 @@
 import { buildApp } from './app.js';
 import { createRuntime } from './bootstrap.js';
 import { migrate } from './db/migrate.js';
-import { Scheduler } from './scheduler/scheduler.js';
+import { SchedulerRunner } from './jobs/runner.js';
 
 const rt = await createRuntime();
 const app = await buildApp(rt);
@@ -11,7 +11,7 @@ if (process.env.MIGRATE_ON_START !== 'false') {
   if (applied.length) app.log.info({ applied }, 'migrations applied');
 }
 
-const scheduler = new Scheduler(rt, app.log);
+const scheduler = new SchedulerRunner(rt, app.log);
 if (rt.config.SCHEDULER_ENABLED) scheduler.start();
 
 let shuttingDown = false;

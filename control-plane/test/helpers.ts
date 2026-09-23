@@ -33,7 +33,7 @@ export async function setup(overrides: Record<string, string> = {}): Promise<Har
 
 export async function reset(rt: Runtime) {
   await rt.db.query(
-    `TRUNCATE audit_log, task_events, leases, tasks, jobs, enrollment_tokens, workers, api_tokens, users CASCADE`,
+    `TRUNCATE audit_log, job_events, job_assignments, jobs, enrollment_tokens, workers, api_tokens, users CASCADE`,
   );
   await rt.redis.flushdb();
 }
@@ -98,12 +98,20 @@ export async function registerWorker(
   return { id: workerId, secret: workerSecret, token: a.json().accessToken };
 }
 
+export const CAPACITY = { cpuCores: 4, ramMb: 8192, gpuPercent: 0, vramMb: 0, diskMb: 20_000, maxTemperatureC: 85 };
+
 export async function heartbeat(h: Harness, w: TestWorker, body: object = {}) {
   return h.app.inject({
     method: 'POST',
     url: '/v1/worker/heartbeat',
     headers: auth(w.token),
-    payload: { state: 'available', usage: { cpuPercent: 10, ramUsedMb: 4000 }, ...body },
+    payload: {
+      state: 'available',
+      usage: { cpuPercent: 10, ramUsedMb: 4000, temperatureC: 50 },
+      capacity: CAPACITY,
+      workloadTypes: ['wasm-cpu'],
+      ...body,
+    },
   });
 }
 
@@ -112,13 +120,7 @@ export async function createJob(h: Harness, token: string, overrides: object = {
     method: 'POST',
     url: '/v1/jobs',
     headers: auth(token),
-    payload: {
-      name: 'pi estimation',
-      module: { name: 'monte-carlo-pi', version: '1.0.0' },
-      params: { samples: 1000 },
-      inputs: [{ seed: 1 }, { seed: 2 }],
-      ...overrides,
-    },
+    payload: { type: 'wasm-cpu', name: 'pi estimation', input: { samples: 1000 }, ...overrides },
   });
   if (res.statusCode !== 201) throw new Error(res.body);
   return res.json();

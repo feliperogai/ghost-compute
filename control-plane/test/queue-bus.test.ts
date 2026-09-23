@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createRedis } from '../src/redis/client.js';
-import { TaskQueue } from '../src/queue/task-queue.js';
+import { JobQueue } from '../src/queue/job-queue.js';
 import { EventBus, type PlatformEvent, type WorkerMessage } from '../src/events/bus.js';
 
 const redis = createRedis(process.env.REDIS_URL!);
@@ -11,32 +11,25 @@ afterAll(() => {
 });
 beforeEach(() => redis.flushdb());
 
-describe('TaskQueue', () => {
-  const q = new TaskQueue(redis);
+describe('JobQueue', () => {
+  const q = new JobQueue(redis);
   const t0 = new Date('2026-01-01T00:00:00Z');
   const t1 = new Date('2026-01-01T00:00:01Z');
 
-  it('orders by priority then age', async () => {
+  it('orders by priority then age, peeks without removing', async () => {
     await q.enqueue([
-      { taskId: 'old-low', priority: 0, createdAt: t0 },
-      { taskId: 'new-high', priority: 50, createdAt: t1 },
-      { taskId: 'old-high', priority: 50, createdAt: t0 },
+      { jobId: 'old-low', priority: 0, createdAt: t0 },
+      { jobId: 'new-high', priority: 50, createdAt: t1 },
+      { jobId: 'old-high', priority: 50, createdAt: t0 },
     ]);
-    expect((await q.pop(3)).map((i) => i.taskId)).toEqual(['old-high', 'new-high', 'old-low']);
+    expect(await q.peek(3)).toEqual(['old-high', 'new-high', 'old-low']);
+    expect(await q.size()).toBe(3);
   });
 
-  it('enqueue is idempotent and restore keeps position', async () => {
-    await q.enqueue([{ taskId: 'a', priority: 0, createdAt: t0 }]);
-    await q.enqueue([{ taskId: 'a', priority: 100, createdAt: t1 }]);
+  it('enqueue is idempotent; remove drops', async () => {
+    await q.enqueue([{ jobId: 'a', priority: 0, createdAt: t0 }]);
+    await q.enqueue([{ jobId: 'a', priority: 100, createdAt: t1 }]);
     expect(await q.size()).toBe(1);
-    const popped = await q.pop(1);
-    await q.enqueue([{ taskId: 'b', priority: 0, createdAt: t1 }]);
-    await q.restore(popped);
-    expect((await q.pop(2)).map((i) => i.taskId)).toEqual(['a', 'b']);
-  });
-
-  it('removes', async () => {
-    await q.enqueue([{ taskId: 'a', priority: 0, createdAt: t0 }]);
     await q.remove(['a']);
     expect(await q.size()).toBe(0);
   });
@@ -54,10 +47,10 @@ describe('EventBus', () => {
     let other = false;
     bus.onWorker('w2', () => (other = true));
     await bus.publish('job.created', { id: 'j' });
-    await bus.sendToWorker('w1', { type: 'lease.cancel', leaseId: 'l', reason: 'x' });
+    await bus.sendToWorker('w1', { type: 'assignment.cancel', assignmentId: 'a', reason: 'x' });
     const [ev, msg] = await got;
     expect(ev.type).toBe('job.created');
-    expect(msg).toEqual({ type: 'lease.cancel', leaseId: 'l', reason: 'x' });
+    expect(msg).toEqual({ type: 'assignment.cancel', assignmentId: 'a', reason: 'x' });
     expect(other).toBe(false);
   });
 });

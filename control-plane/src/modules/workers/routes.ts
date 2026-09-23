@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AppContext } from '../../context.js';
 import { requireUser, requireWorker, userId, workerId } from '../../auth/plugin.js';
 import { hardwareSchema, uuidParam } from '../schemas.js';
+import { capacitySchema } from '../../jobs/schemas.js';
 import { WorkerService } from './service.js';
 
 const credentialRateLimit = { rateLimit: { max: 20, timeWindow: '1 minute' } };
@@ -60,7 +61,9 @@ export const workerRoutes =
                 onBattery: z.boolean().optional(),
               })
               .strict(),
-            activeLeaseIds: z.array(z.uuid()).max(256).default([]),
+            activeAssignmentIds: z.array(z.uuid()).max(256).default([]),
+            capacity: capacitySchema.optional(),
+            workloadTypes: z.array(z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/)).max(32).optional(),
             agentVersion: z.string().max(50).optional(),
           }),
         },

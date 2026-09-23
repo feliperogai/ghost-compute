@@ -133,7 +133,7 @@ export function SidePanels({ status }: { status: Status }) {
           </div>
         </div>
         {s && s.tasks.preempted > 0 && (
-          <p className="note">{s.tasks.preempted} interrompidos para liberar o computador para você.</p>
+          <p className="note">{s.tasks.preempted} interrompidos (computador ocupado, desligado ou sem conexão) e enviados para outro computador.</p>
         )}
       </section>
 
