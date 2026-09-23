@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::configuration::Limits;
-use crate::monitoring::Snapshot;
+pub use crate::configuration::settings::OwnerControl;
+use crate::configuration::{Limits, normalize_app_name};
+use crate::monitoring::{Snapshot, presence::PresenceView};
 
 /// Mirrors the control plane's worker states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -22,15 +23,6 @@ pub enum WorkerState {
     Stopped,
 }
 
-/// Owner commands (delivered by the tray app over IPC in a later phase).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OwnerControl {
-    #[default]
-    Resume,
-    Pause,
-    Stop,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "reason")]
 pub enum Reason {
@@ -43,6 +35,9 @@ pub enum Reason {
     OwnerCpuBusy { percent: f32, limit: f32 },
     RamPressure { percent: f32, limit: f32 },
     OwnerActive { idle_secs: u64, required: u64 },
+    SessionUnlocked,
+    GameRunning,
+    PriorityAppRunning { app: String },
     CoolingDown { remaining_secs: u64 },
     ExecutionUnavailable,
     NoData,
@@ -56,8 +51,18 @@ pub struct Decision {
     pub preempt: bool,
 }
 
+/// Everything the policy looks at, besides time.
+pub struct Inputs<'a> {
+    pub snapshot: &'a Snapshot,
+    pub control: OwnerControl,
+    pub presence: &'a PresenceView,
+    pub running_tasks: usize,
+}
+
 pub struct Policy {
     limits: Limits,
+    /// Normalized `priority_apps`.
+    priority: Vec<String>,
     /// When conditions last became (and stayed) acceptable.
     clean_since: Option<Instant>,
     /// Whether this build can execute workloads at all.
@@ -66,26 +71,28 @@ pub struct Policy {
 
 impl Policy {
     pub fn new(limits: Limits, can_execute: bool) -> Self {
-        Self { limits, clean_since: None, can_execute }
+        let mut p = Self { limits: Limits::default(), priority: vec![], clean_since: None, can_execute };
+        p.set_limits(limits);
+        p
     }
 
     pub fn limits(&self) -> &Limits {
         &self.limits
     }
 
-    pub fn evaluate(
-        &mut self,
-        snap: &Snapshot,
-        control: OwnerControl,
-        running_tasks: usize,
-        now: Instant,
-        local_time: chrono::DateTime<chrono::Local>,
-    ) -> Decision {
-        let l = &self.limits;
-        match control {
-            OwnerControl::Stop => return self.halt(WorkerState::Stopped, Reason::StoppedByOwner),
-            OwnerControl::Pause => return self.halt(WorkerState::Paused, Reason::PausedByOwner),
-            OwnerControl::Resume => {}
+    /// New limits apply from the next evaluation; the cool-down restarts.
+    pub fn set_limits(&mut self, limits: Limits) {
+        self.priority = limits.priority_apps.iter().map(|a| normalize_app_name(a)).collect();
+        self.limits = limits;
+        self.clean_since = None;
+    }
+
+    pub fn evaluate(&mut self, i: &Inputs<'_>, now: Instant, local_time: chrono::DateTime<chrono::Local>) -> Decision {
+        let (l, snap, presence) = (&self.limits, i.snapshot, i.presence);
+        match i.control {
+            OwnerControl::Stopped => return self.halt(WorkerState::Stopped, Reason::StoppedByOwner),
+            OwnerControl::Paused => return self.halt(WorkerState::Paused, Reason::PausedByOwner),
+            OwnerControl::Started => {}
         }
         if !l.enabled {
             return self.halt(WorkerState::Stopped, Reason::Disabled);
@@ -113,15 +120,26 @@ impl Policy {
             violations.push(Reason::RamPressure { percent: ram, limit: l.user_ram_threshold_percent });
         }
         if l.require_idle_secs > 0 {
-            // Unknown idle time (e.g. service in session 0) is not treated as active.
-            if let Some(idle) = snap.latest.user_idle_secs.filter(|i| *i < l.require_idle_secs) {
+            // Prefer the desktop app's view (real session); unknown idle is not treated as active.
+            let idle = presence.idle_secs.or(snap.latest.user_idle_secs);
+            if let Some(idle) = idle.filter(|i| *i < l.require_idle_secs) {
                 violations.push(Reason::OwnerActive { idle_secs: idle, required: l.require_idle_secs });
             }
+        }
+        // Explicit opt-in: unknown lock state counts as unlocked.
+        if l.only_when_locked && presence.locked != Some(true) {
+            violations.push(Reason::SessionUnlocked);
+        }
+        if l.pause_during_games && presence.fullscreen_app == Some(true) {
+            violations.push(Reason::GameRunning);
+        }
+        if let Some(app) = self.priority.iter().find(|a| snap.latest.processes.contains(a.as_str())) {
+            violations.push(Reason::PriorityAppRunning { app: app.clone() });
         }
 
         if !violations.is_empty() {
             self.clean_since = None;
-            return Decision { state: WorkerState::Waiting, reasons: violations, preempt: running_tasks > 0 };
+            return Decision { state: WorkerState::Waiting, reasons: violations, preempt: i.running_tasks > 0 };
         }
 
         let since = *self.clean_since.get_or_insert(now);
@@ -130,12 +148,12 @@ impl Policy {
         if clean_for < need {
             let remaining_secs = (need - clean_for).as_secs_f32().ceil() as u64;
             return Decision {
-                state: if running_tasks > 0 { WorkerState::Running } else { WorkerState::Waiting },
+                state: if i.running_tasks > 0 { WorkerState::Running } else { WorkerState::Waiting },
                 reasons: vec![Reason::CoolingDown { remaining_secs }],
                 preempt: false,
             };
         }
-        if running_tasks > 0 {
+        if i.running_tasks > 0 {
             return Decision { state: WorkerState::Running, reasons: vec![], preempt: false };
         }
         if !self.can_execute {
@@ -160,6 +178,8 @@ mod tests {
     use crate::configuration::ScheduleWindow;
     use crate::monitoring::Sample;
     use chrono::TimeZone;
+    use std::collections::HashSet;
+    use std::sync::Arc;
 
     fn limits() -> Limits {
         Limits { resume_after_secs: 60, require_idle_secs: 300, ..Limits::default() }
@@ -182,8 +202,19 @@ mod tests {
         chrono::Local.with_ymd_and_hms(2026, 9, 21, 12, 0, 0).unwrap() // Monday
     }
 
+    fn run(
+        p: &mut Policy,
+        s: &Snapshot,
+        presence: &PresenceView,
+        control: OwnerControl,
+        tasks: usize,
+        t: Instant,
+    ) -> Decision {
+        p.evaluate(&Inputs { snapshot: s, control, presence, running_tasks: tasks }, t, noon())
+    }
+
     fn eval(p: &mut Policy, s: &Snapshot, t: Instant) -> Decision {
-        p.evaluate(s, OwnerControl::Resume, 0, t, noon())
+        run(p, s, &PresenceView::default(), OwnerControl::Started, 0, t)
     }
 
     #[test]
@@ -204,11 +235,11 @@ mod tests {
         eval(&mut p, &snap(5.0), t0);
         assert_eq!(eval(&mut p, &snap(5.0), t0 + Duration::from_secs(60)).state, WorkerState::Available);
 
-        let d = p.evaluate(&snap(80.0), OwnerControl::Resume, 1, t0 + Duration::from_secs(61), noon());
+        let d =
+            run(&mut p, &snap(80.0), &PresenceView::default(), OwnerControl::Started, 1, t0 + Duration::from_secs(61));
         assert_eq!(d.state, WorkerState::Waiting);
         assert!(d.preempt);
         assert!(matches!(d.reasons[0], Reason::OwnerCpuBusy { .. }));
-        // Must wait a full cooldown again.
         assert_eq!(eval(&mut p, &snap(5.0), t0 + Duration::from_secs(62)).state, WorkerState::Waiting);
     }
 
@@ -216,7 +247,7 @@ mod tests {
     fn ghost_cpu_does_not_count_as_owner_activity() {
         let mut p = Policy::new(Limits { resume_after_secs: 0, ..limits() }, true);
         let mut s = snap(90.0);
-        s.avg.cpu_ghost_percent = 85.0; // 5% owner
+        s.avg.cpu_ghost_percent = 85.0;
         assert_eq!(eval(&mut p, &s, Instant::now()).state, WorkerState::Available);
     }
 
@@ -224,9 +255,10 @@ mod tests {
     fn owner_controls_win() {
         let mut p = Policy::new(limits(), true);
         let t = Instant::now();
-        let d = p.evaluate(&snap(0.0), OwnerControl::Pause, 1, t, noon());
+        let none = PresenceView::default();
+        let d = run(&mut p, &snap(0.0), &none, OwnerControl::Paused, 1, t);
         assert_eq!((d.state, d.preempt), (WorkerState::Paused, true));
-        let d = p.evaluate(&snap(0.0), OwnerControl::Stop, 0, t, noon());
+        let d = run(&mut p, &snap(0.0), &none, OwnerControl::Stopped, 0, t);
         assert_eq!(d.state, WorkerState::Stopped);
         let mut off = Policy::new(Limits { enabled: false, ..limits() }, true);
         assert_eq!(eval(&mut off, &snap(0.0), t).reasons, vec![Reason::Disabled]);
@@ -261,6 +293,44 @@ mod tests {
     }
 
     #[test]
+    fn presence_idle_overrides_service_view() {
+        let mut p = Policy::new(limits(), true);
+        let presence = PresenceView { idle_secs: Some(20), ..Default::default() };
+        let d = run(&mut p, &snap(0.0), &presence, OwnerControl::Started, 0, Instant::now());
+        assert!(matches!(d.reasons[0], Reason::OwnerActive { idle_secs: 20, .. }));
+    }
+
+    #[test]
+    fn only_when_locked() {
+        let mut p = Policy::new(Limits { only_when_locked: true, resume_after_secs: 0, ..limits() }, true);
+        let t = Instant::now();
+        assert_eq!(eval(&mut p, &snap(0.0), t).reasons, vec![Reason::SessionUnlocked], "unknown = unlocked");
+        let unlocked = PresenceView { locked: Some(false), ..Default::default() };
+        assert_eq!(
+            run(&mut p, &snap(0.0), &unlocked, OwnerControl::Started, 0, t).reasons,
+            vec![Reason::SessionUnlocked]
+        );
+        let locked = PresenceView { locked: Some(true), ..Default::default() };
+        assert_eq!(run(&mut p, &snap(0.0), &locked, OwnerControl::Started, 0, t).state, WorkerState::Available);
+    }
+
+    #[test]
+    fn games_and_priority_apps() {
+        let l = Limits { priority_apps: vec!["OBS64.exe".into()], resume_after_secs: 0, ..limits() };
+        let mut p = Policy::new(l, true);
+        let t = Instant::now();
+        let game = PresenceView { fullscreen_app: Some(true), ..Default::default() };
+        assert_eq!(run(&mut p, &snap(0.0), &game, OwnerControl::Started, 1, t).reasons, vec![Reason::GameRunning]);
+
+        let mut s = snap(0.0);
+        s.latest.processes = Arc::new(HashSet::from(["explorer".to_string(), "obs64".to_string()]));
+        assert_eq!(eval(&mut p, &s, t).reasons, vec![Reason::PriorityAppRunning { app: "obs64".into() }]);
+
+        p.set_limits(Limits { pause_during_games: false, resume_after_secs: 0, ..limits() });
+        assert_eq!(run(&mut p, &s, &game, OwnerControl::Started, 0, t).state, WorkerState::Available);
+    }
+
+    #[test]
     fn schedule() {
         let l = Limits {
             resume_after_secs: 0,
@@ -270,8 +340,9 @@ mod tests {
         let mut p = Policy::new(l, true);
         assert_eq!(eval(&mut p, &snap(0.0), Instant::now()).reasons, vec![Reason::OutsideSchedule]);
         let night = chrono::Local.with_ymd_and_hms(2026, 9, 21, 23, 0, 0).unwrap();
-        let d = p.evaluate(&snap(0.0), OwnerControl::Resume, 0, Instant::now(), night);
-        assert_eq!(d.state, WorkerState::Available);
+        let none = PresenceView::default();
+        let i = Inputs { snapshot: &snap(0.0), control: OwnerControl::Started, presence: &none, running_tasks: 0 };
+        assert_eq!(p.evaluate(&i, Instant::now(), night).state, WorkerState::Available);
     }
 
     #[test]

@@ -177,6 +177,10 @@ impl ApiClient {
             .map(|_| ())
     }
 
+    pub async fn stats(&self) -> Result<crate::runtime::WorkerStats, ApiError> {
+        self.call::<(), _>(Method::GET, "/v1/worker/me/stats?recent=20", None).await
+    }
+
     pub async fn me(&self) -> Result<serde_json::Value, ApiError> {
         self.call::<(), _>(Method::GET, "/v1/worker/me", None).await
     }

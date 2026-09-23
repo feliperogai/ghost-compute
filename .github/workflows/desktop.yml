@@ -1,0 +1,55 @@
+name: desktop
+
+on:
+  push:
+    paths: ["desktop/**", "ipc/**", ".github/workflows/desktop.yml"]
+  pull_request:
+    paths: ["desktop/**", "ipc/**", ".github/workflows/desktop.yml"]
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  tauri-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - run: npm ci
+      - run: npm run build
+      - working-directory: desktop/src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+      - run: npx tauri build --bundles msi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghost-desktop-msi
+          path: desktop/src-tauri/target/release/bundle/msi/*.msi

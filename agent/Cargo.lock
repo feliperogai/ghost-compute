@@ -540,6 +540,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
+ "ghost-ipc",
  "rand",
  "rcgen",
  "reqwest",
@@ -562,6 +563,17 @@ dependencies = [
  "windows",
  "wiremock",
  "zeroize",
+]
+
+[[package]]
+name = "ghost-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "windows",
 ]
 
 [[package]]

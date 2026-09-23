@@ -3,6 +3,8 @@
 //! The owner's limits live here and are the local source of truth: the server
 //! can never relax them.
 
+pub mod settings;
+
 use std::path::{Path, PathBuf};
 
 use chrono::{Datelike, NaiveTime, Weekday};
@@ -93,6 +95,12 @@ pub struct Limits {
     /// Seconds conditions must stay good before becoming available again.
     pub resume_after_secs: u64,
     pub pause_on_battery: bool,
+    /// Only share while the Windows session is locked.
+    pub only_when_locked: bool,
+    /// Yield while a full-screen game / Direct3D app / presentation is in the foreground.
+    pub pause_during_games: bool,
+    /// Yield while any of these processes runs (e.g. "obs64.exe", "premiere"). Case-insensitive, ".exe" optional.
+    pub priority_apps: Vec<String>,
     /// Allowed windows. Empty = always.
     pub schedule: Vec<ScheduleWindow>,
 }
@@ -110,6 +118,9 @@ impl Default for Limits {
             require_idle_secs: 300,
             resume_after_secs: 60,
             pause_on_battery: true,
+            only_when_locked: false,
+            pause_during_games: true,
+            priority_apps: Vec::new(),
             schedule: Vec::new(),
         }
     }
@@ -153,7 +164,54 @@ impl ScheduleWindow {
     }
 }
 
+/// "OBS64.EXE" / "obs64" → "obs64".
+pub fn normalize_app_name(name: &str) -> String {
+    let n = name.trim().to_lowercase();
+    n.strip_suffix(".exe").map(str::to_string).unwrap_or(n)
+}
+
 impl Limits {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let bad = |m: String| Err(ConfigError::Invalid(m));
+        for (name, v) in [
+            ("max_cpu_percent", self.max_cpu_percent),
+            ("max_gpu_percent", self.max_gpu_percent),
+            ("user_cpu_threshold_percent", self.user_cpu_threshold_percent),
+            ("user_ram_threshold_percent", self.user_ram_threshold_percent),
+        ] {
+            if !v.is_finite() || !(0.0..=100.0).contains(&v) {
+                return bad(format!("limits.{name} must be 0..=100"));
+            }
+        }
+        if !self.max_temperature_c.is_finite() || !(30.0..=110.0).contains(&self.max_temperature_c) {
+            return bad("limits.max_temperature_c must be 30..=110".into());
+        }
+        if !(128..=1024 * 1024).contains(&self.max_ram_mb) {
+            return bad("limits.max_ram_mb must be 128..=1048576".into());
+        }
+        if self.require_idle_secs > 24 * 3600 || self.resume_after_secs > 3600 {
+            return bad("limits.require_idle_secs ≤ 86400 and resume_after_secs ≤ 3600".into());
+        }
+        if self.priority_apps.len() > 64 {
+            return bad("limits.priority_apps: at most 64 entries".into());
+        }
+        for a in &self.priority_apps {
+            let ok = !a.trim().is_empty()
+                && a.len() <= 100
+                && a.chars().all(|c| c.is_alphanumeric() || " ._-()+".contains(c));
+            if !ok {
+                return bad(format!("limits.priority_apps: invalid process name '{a}'"));
+            }
+        }
+        if self.schedule.len() > 28 {
+            return bad("limits.schedule: at most 28 windows".into());
+        }
+        for w in &self.schedule {
+            w.parse()?;
+        }
+        Ok(())
+    }
+
     pub fn in_schedule(&self, now: chrono::DateTime<chrono::Local>) -> bool {
         self.schedule.is_empty() || self.schedule.iter().any(|w| w.contains(now.weekday(), now.time()))
     }
@@ -203,23 +261,7 @@ impl Config {
         if !(1..=60).contains(&self.agent.sample_interval_secs) {
             return bad("agent.sample_interval_secs must be 1..=60");
         }
-        let l = &self.limits;
-        for (name, v) in [
-            ("max_cpu_percent", l.max_cpu_percent),
-            ("max_gpu_percent", l.max_gpu_percent),
-            ("user_cpu_threshold_percent", l.user_cpu_threshold_percent),
-            ("user_ram_threshold_percent", l.user_ram_threshold_percent),
-        ] {
-            if !(0.0..=100.0).contains(&v) {
-                return Err(ConfigError::Invalid(format!("limits.{name} must be 0..=100")));
-            }
-        }
-        if !(30.0..=110.0).contains(&l.max_temperature_c) {
-            return bad("limits.max_temperature_c must be 30..=110");
-        }
-        for w in &l.schedule {
-            w.parse()?;
-        }
+        self.limits.validate()?;
         Ok(())
     }
 
