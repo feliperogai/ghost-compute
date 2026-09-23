@@ -149,6 +149,9 @@ pub struct Assignment {
     pub resources: AssignmentResources,
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
+    /// Partial results saved by an earlier attempt (image-inference). Validated before use.
+    #[serde(default)]
+    pub checkpoint: Option<serde_json::Value>,
 }
 
 fn default_timeout() -> u64 {

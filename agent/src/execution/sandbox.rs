@@ -8,8 +8,26 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use super::protocol::{Event, MAX_LINE, Request};
+use super::inference::{InferenceItem, encode_frame};
+use super::protocol::{Event, GpuMode, MAX_LINE, Request};
 use super::registry::Workload;
+
+/// What the sandbox reports while it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Update {
+    Progress(f32),
+    Item(InferenceItem),
+}
+
+/// Extra input for workloads that consume data (image-inference).
+#[derive(Default)]
+pub struct Input {
+    /// Indexes announced in the request; frames must arrive in this order.
+    pub inputs: Vec<u32>,
+    /// Image bytes, fed to the sandbox as they arrive (bounded channel = bounded memory).
+    pub frames: Option<tokio::sync::mpsc::Receiver<(u32, Vec<u8>)>>,
+    pub gpu: GpuMode,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SandboxLimits {
@@ -74,9 +92,25 @@ impl Sandbox {
         mut progress: impl FnMut(f32),
         cancel: CancellationToken,
     ) -> Result<serde_json::Value, SandboxError> {
+        let on = move |u: Update| {
+            if let Update::Progress(f) = u {
+                progress(f)
+            }
+        };
+        self.run_with(workload, limits, Input::default(), on, cancel).await
+    }
+
+    pub async fn run_with(
+        &self,
+        workload: &Workload,
+        limits: SandboxLimits,
+        input: Input,
+        mut on: impl FnMut(Update),
+        cancel: CancellationToken,
+    ) -> Result<serde_json::Value, SandboxError> {
         let dir = self.work_root.join(uuid::Uuid::new_v4().to_string());
         create_private_dir(&dir).map_err(|e| SandboxError::Spawn(e.to_string()))?;
-        let res = self.run_in(&dir, workload, limits, &mut progress, cancel).await;
+        let res = self.run_in(&dir, workload, limits, input, &mut on, cancel).await;
         // Destroy the environment whatever happened.
         if let Err(e) = std::fs::remove_dir_all(&dir) {
             tracing::warn!(error = %e, dir = %dir.display(), "could not remove sandbox directory");
@@ -89,7 +123,8 @@ impl Sandbox {
         dir: &Path,
         workload: &Workload,
         limits: SandboxLimits,
-        progress: &mut impl FnMut(f32),
+        input: Input,
+        on: &mut impl FnMut(Update),
         cancel: CancellationToken,
     ) -> Result<serde_json::Value, SandboxError> {
         let mut cmd = Command::new(&self.exe);
@@ -112,8 +147,14 @@ impl Sandbox {
         {
             let mem = limits.process_memory_bytes;
             let cpu_secs = limits.deadline.as_secs() + 5;
+            // GPU drivers (Mesa) back device memory with memfds, which RLIMIT_FSIZE also
+            // caps; allow those up to the memory limit and turn the on-disk shader cache off.
+            let fsize = if input.gpu == GpuMode::Off { 0 } else { mem };
+            if input.gpu != GpuMode::Off {
+                cmd.env("MESA_SHADER_CACHE_DISABLE", "true");
+            }
             unsafe {
-                cmd.pre_exec(move || unix::confine(mem, cpu_secs));
+                cmd.pre_exec(move || unix::confine(mem, cpu_secs, fsize));
             }
         }
 
@@ -133,16 +174,31 @@ impl Sandbox {
             workload: workload.clone(),
             memory_bytes: limits.wasm_memory_bytes,
             deadline_ms: limits.deadline.as_millis() as u64,
+            inputs: input.inputs,
+            gpu: input.gpu,
         };
         let mut line = serde_json::to_vec(&req).map_err(|e| SandboxError::Protocol(e.to_string()))?;
         line.push(b'\n');
         let mut stdin = child.stdin.take().expect("piped stdin");
-        // If the OS already killed the sandbox (e.g. memory cap) this fails with a broken pipe;
-        // the read loop below then sees EOF and reports the crash with its exit status.
-        if let Err(e) = stdin.write_all(&line).await {
-            tracing::debug!(error = %e, "could not write sandbox request");
-        }
-        drop(stdin);
+        // Writer runs alongside the reader: frames are streamed while results come back.
+        // If the OS already killed the sandbox (e.g. memory cap) writes fail with a broken
+        // pipe; the read loop below then sees EOF and reports the crash with its exit status.
+        let mut frames = input.frames;
+        let writer = tokio::spawn(async move {
+            if let Err(e) = stdin.write_all(&line).await {
+                tracing::debug!(error = %e, "could not write sandbox request");
+                return;
+            }
+            if let Some(rx) = frames.as_mut() {
+                while let Some((index, bytes)) = rx.recv().await {
+                    if stdin.write_all(&encode_frame(index, &bytes)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            let _ = stdin.flush().await;
+        });
+        let _writer_guard = AbortOnDrop(writer);
 
         let stdout = child.stdout.take().expect("piped stdout");
         // Bounded total output: a runaway sandbox cannot exhaust agent memory.
@@ -157,7 +213,8 @@ impl Sandbox {
                 line = lines.next_line() => match line {
                     Ok(Some(l)) if l.len() > MAX_LINE => break Err(SandboxError::Protocol("line too long".into())),
                     Ok(Some(l)) => match serde_json::from_str::<Event>(&l) {
-                        Ok(Event::Progress { fraction }) => progress(fraction.clamp(0.0, 1.0)),
+                        Ok(Event::Progress { fraction }) => on(Update::Progress(fraction.clamp(0.0, 1.0))),
+                        Ok(Event::Item { item }) => on(Update::Item(item)),
                         Ok(Event::Done { output }) => break Ok(output),
                         Ok(Event::Error { code, message }) if code == "DEADLINE" => {
                             let _ = message;
@@ -184,6 +241,14 @@ impl Sandbox {
     }
 }
 
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -199,7 +264,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 #[cfg(unix)]
 mod unix {
     /// Runs in the child between fork and exec: only async-signal-safe calls.
-    pub fn confine(mem_bytes: u64, cpu_secs: u64) -> std::io::Result<()> {
+    pub fn confine(mem_bytes: u64, cpu_secs: u64, fsize: u64) -> std::io::Result<()> {
         unsafe {
             let set = |res, v: u64| {
                 let lim = libc::rlimit { rlim_cur: v as libc::rlim_t, rlim_max: v as libc::rlim_t };
@@ -211,8 +276,8 @@ mod unix {
             set(libc::RLIMIT_AS, mem_bytes)?;
             set(libc::RLIMIT_CPU, cpu_secs)?;
             set(libc::RLIMIT_CORE, 0)?;
-            // Cannot write files of any size (stdout is a pipe, unaffected).
-            set(libc::RLIMIT_FSIZE, 0)?;
+            // Cannot write files of any size (stdout is a pipe, unaffected); GPU mode: see caller.
+            set(libc::RLIMIT_FSIZE, fsize)?;
             set(libc::RLIMIT_NOFILE, 32)?;
             // No privilege gain through setuid binaries; own session, detached from the terminal.
             if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {

@@ -10,10 +10,17 @@
 //! 3. **WebAssembly** (`wasm`): Wasmtime with no WASI; the module can only compute and
 //!    call `ghost.progress`. Memory, stack and time are bounded.
 //!
+//! 4. **GPU** (`gpu`, optional): for `image-inference` only, the dense layers run in our
+//!    own fixed WGSL shader, inside the sandbox process, on vectors the WebAssembly
+//!    preprocessor produced. Job data never reaches the GPU as code.
+//!
 //! The agent never runs shell commands, scripts or executables received from the network.
 
 pub mod executor;
 pub use executor::Executor;
+#[cfg(feature = "gpu")]
+pub mod gpu;
+pub mod inference;
 pub mod protocol;
 pub mod registry;
 pub mod sandbox;
