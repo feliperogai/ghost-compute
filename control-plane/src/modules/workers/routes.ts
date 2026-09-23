@@ -70,6 +70,15 @@ export const workerRoutes =
 
     app.get('/v1/worker/me', { onRequest: requireWorker(ctx) }, async (req) => svc.get(workerId(req)));
 
+    app.get(
+      '/v1/worker/me/stats',
+      {
+        onRequest: requireWorker(ctx),
+        schema: { querystring: z.object({ recent: z.coerce.number().int().min(0).max(100).default(20) }) },
+      },
+      async (req) => svc.stats(workerId(req), req.query.recent),
+    );
+
     // ---- user-facing ---------------------------------------------------------
 
     app.get(

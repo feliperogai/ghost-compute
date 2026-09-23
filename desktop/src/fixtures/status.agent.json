@@ -1,0 +1,131 @@
+{
+  "agent": {
+    "deviceId": "875f8090-b4eb-4fbb-8b08-492acfda9d94",
+    "executionAvailable": false,
+    "name": "e2e-desktop",
+    "serverUrl": "http://127.0.0.1:18181",
+    "version": "0.1.0",
+    "workerId": "45d29a03-da4a-4380-bb99-9078d7e5a7f3"
+  },
+  "connection": {
+    "lastContactAt": "2026-09-23T02:40:07.092464785Z",
+    "lastError": null,
+    "status": "connected"
+  },
+  "control": "started",
+  "generatedAt": "2026-09-23T02:40:08.084594521Z",
+  "hardware": {
+    "cpu": {
+      "cores": 4,
+      "features": [
+        "sse4.2",
+        "avx",
+        "avx2",
+        "fma",
+        "avx512f",
+        "aes",
+        "bmi2",
+        "popcnt"
+      ],
+      "model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+      "threads": 4
+    },
+    "diskFreeMb": 19605,
+    "gpus": [],
+    "os": {
+      "name": "Ubuntu",
+      "version": "Linux (Ubuntu 24.04)"
+    },
+    "ramMb": 16095,
+    "storage": [
+      {
+        "freeMb": 19605,
+        "kind": "HDD",
+        "mount": "/",
+        "removable": false,
+        "totalMb": 258019
+      },
+      {
+        "freeMb": 23,
+        "kind": "HDD",
+        "mount": "/opt/claude-code",
+        "removable": false,
+        "totalMb": 248
+      },
+      {
+        "freeMb": 15,
+        "kind": "HDD",
+        "mount": "/opt/env-runner",
+        "removable": false,
+        "totalMb": 46
+      }
+    ]
+  },
+  "limits": {
+    "enabled": true,
+    "max_cpu_percent": 25.0,
+    "max_gpu_percent": 0.0,
+    "max_ram_mb": 2048,
+    "max_temperature_c": 85.0,
+    "only_when_locked": false,
+    "pause_during_games": true,
+    "pause_on_battery": false,
+    "priority_apps": [],
+    "require_idle_secs": 0,
+    "resume_after_secs": 0,
+    "schedule": [],
+    "user_cpu_threshold_percent": 100.0,
+    "user_ram_threshold_percent": 100.0
+  },
+  "presence": {
+    "fullscreenApp": null,
+    "idleSecs": null,
+    "locked": null
+  },
+  "reasons": [
+    {
+      "reason": "execution_unavailable"
+    }
+  ],
+  "state": "waiting",
+  "stats": {
+    "computeSeconds": 0,
+    "credits": 0.0,
+    "recent": [],
+    "tasks": {
+      "active": 0,
+      "failed": 0,
+      "preempted": 0,
+      "succeeded": 0
+    }
+  },
+  "usage": {
+    "avg": {
+      "cpuGhostPercent": 0.16594086587429047,
+      "cpuPercent": 2.4736735820770264,
+      "gpuMemoryUsedMb": null,
+      "gpuPercent": null,
+      "onBattery": null,
+      "ramGhostMb": 21,
+      "ramTotalMb": 16095,
+      "ramUsedMb": 828,
+      "temperatureC": null,
+      "userIdleSecs": null
+    },
+    "latest": {
+      "cpuGhostPercent": 0.24875621497631073,
+      "cpuPercent": 0.9950248599052428,
+      "gpuMemoryUsedMb": null,
+      "gpuPercent": null,
+      "onBattery": null,
+      "ramGhostMb": 21,
+      "ramTotalMb": 16095,
+      "ramUsedMb": 829,
+      "temperatureC": null,
+      "userIdleSecs": null
+    },
+    "maxTemperatureC": null,
+    "samples": 6
+  },
+  "workloads": []
+}

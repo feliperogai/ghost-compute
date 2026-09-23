@@ -1,0 +1,4 @@
+node_modules/
+dist/
+screenshots/
+e2e-desktop.png

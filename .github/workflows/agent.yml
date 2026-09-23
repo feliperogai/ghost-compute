@@ -2,9 +2,9 @@ name: agent
 
 on:
   push:
-    paths: ["agent/**", ".github/workflows/agent.yml"]
+    paths: ["agent/**", "ipc/**", ".github/workflows/agent.yml"]
   pull_request:
-    paths: ["agent/**", ".github/workflows/agent.yml"]
+    paths: ["agent/**", "ipc/**", ".github/workflows/agent.yml"]
 
 jobs:
   test:
@@ -12,10 +12,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
+        crate: [agent, ipc]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: agent
+        working-directory: ${{ matrix.crate }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -23,11 +24,12 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: agent
+          workspaces: ${{ matrix.crate }}
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - name: Smoke-run inventory and sampler
+        if: matrix.crate == 'agent'
         run: |
           cargo run -q -- hardware
           cargo run -q -- sample --count 2

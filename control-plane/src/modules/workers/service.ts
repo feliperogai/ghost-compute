@@ -181,6 +181,56 @@ export class WorkerService {
     };
   }
 
+  /**
+   * Contribution summary shown in the desktop app.
+   * Credits are internal and non-monetary: 1 credit = 1 minute of successfully completed task time.
+   */
+  async stats(workerId: string, recentLimit: number) {
+    const totals = await this.ctx.db.query<{
+      succeeded: number;
+      failed: number;
+      preempted: number;
+      active: number;
+      seconds: number;
+    }>(
+      `SELECT count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+              count(*) FILTER (WHERE status = 'failed')::int AS failed,
+              count(*) FILTER (WHERE status = 'preempted')::int AS preempted,
+              count(*) FILTER (WHERE status IN ('offered', 'running'))::int AS active,
+              COALESCE(sum(EXTRACT(EPOCH FROM finished_at - accepted_at))
+                         FILTER (WHERE status = 'succeeded' AND accepted_at IS NOT NULL), 0)::float AS seconds
+         FROM leases WHERE worker_id = $1`,
+      [workerId],
+    );
+    const recent = await this.ctx.db.query(
+      `SELECT l.id, l.status, l.progress, l.stage, l.offered_at, l.accepted_at, l.finished_at,
+              t.idx, j.id AS job_id, j.name AS job_name, j.module_name, j.module_version
+         FROM leases l JOIN tasks t ON t.id = l.task_id JOIN jobs j ON j.id = t.job_id
+        WHERE l.worker_id = $1 AND l.status NOT IN ('rejected')
+        ORDER BY l.offered_at DESC LIMIT $2`,
+      [workerId, recentLimit],
+    );
+    const t = totals.rows[0]!;
+    return {
+      tasks: { succeeded: t.succeeded, failed: t.failed, preempted: t.preempted, active: t.active },
+      computeSeconds: Math.round(t.seconds),
+      credits: Math.round((t.seconds / 60) * 100) / 100,
+      recent: recent.rows.map((r) => ({
+        leaseId: r.id,
+        jobId: r.job_id,
+        jobName: r.job_name,
+        module: { name: r.module_name, version: r.module_version },
+        taskIndex: r.idx,
+        status: r.status,
+        progress: r.progress,
+        stage: r.stage,
+        offeredAt: r.offered_at.toISOString(),
+        acceptedAt: r.accepted_at?.toISOString() ?? null,
+        finishedAt: r.finished_at?.toISOString() ?? null,
+      })),
+    };
+  }
+
   async heartbeat(workerId: string, hb: HeartbeatInput) {
     const { rows } = await this.ctx.db.query<{ prev_state: string; state: string }>(
       `UPDATE workers w SET state = $2, last_usage = $3, last_seen_at = now(),
