@@ -1,6 +1,7 @@
 // Parameter schemas per registered workload type. They mirror the agent's own
 // validation (agent/src/execution/registry.rs); both sides reject unknown fields.
 import { z } from 'zod';
+import { imageInferenceInput } from '../inference/schemas.js';
 
 export const benchmarkInput = z
   .discriminatedUnion('kind', [
@@ -25,4 +26,5 @@ export const benchmarkInput = z
 
 export const INPUT_SCHEMAS: Record<string, z.ZodType> = {
   benchmark: benchmarkInput,
+  'image-inference': imageInferenceInput,
 };

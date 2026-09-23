@@ -90,6 +90,41 @@ done
 [ "$(echo "$J" | json .output.checksum)" = "00000000000132a2" ] || fail "wrong checksum: $J"  # 78498 = 0x132a2 primes ≤ 1e6
 echo "benchmark: $(echo "$J" | json '.output.opsPerSecond') numbers/s, module $(echo "$J" | json '.output.runtime.moduleSha256' | cut -c1-12)…"
 
+echo "== image inference: dataset → batches → workers → combined result"
+FIX="$ROOT/workloads/image-inference/testdata"
+DS=$(curl -sf -X POST "$API/v1/datasets" -H "authorization: Bearer $OP" -H 'content-type: application/json' \
+  -d '{"name":"digits"}' | json .id)
+for f in "$FIX"/*.png "$FIX"/*.jpg; do
+  case "$f" in *.png) T=image/png ;; *) T=image/jpeg ;; esac
+  curl -sf -X POST "$API/v1/datasets/$DS/images?name=$(basename "$f")" -H "authorization: Bearer $OP" \
+    -H "content-type: $T" --data-binary @"$f" >/dev/null || fail "upload $f"
+done
+head -c 65536 "$AGENT" >"$WORK/fake.png"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/v1/datasets/$DS/images" -H "authorization: Bearer $OP" \
+  -H 'content-type: image/png' --data-binary @"$WORK/fake.png")
+[ "$CODE" = 415 ] || fail "executable accepted as an image ($CODE)"
+curl -sf -X POST "$API/v1/datasets/$DS/seal" -H "authorization: Bearer $OP" >/dev/null
+RUN=$(curl -sf -X POST "$API/v1/inference" -H "authorization: Bearer $OP" -H 'content-type: application/json' \
+  -d "{\"datasetId\":\"$DS\",\"batchSize\":5,\"topK\":2,\"timeoutSeconds\":120}" | json .id)
+for _ in $(seq 120); do
+  G=$(curl -sf "$API/v1/inference/$RUN" -H "authorization: Bearer $OP")
+  GS=$(echo "$G" | json .status)
+  [ "$GS" = RUNNING ] || break
+  sleep 0.5
+done
+[ "$GS" = COMPLETED ] || fail "inference ended $GS: $G"
+R=$(curl -sf "$API/v1/inference/$RUN/result" -H "authorization: Bearer $OP")
+echo "$R" | node -e "
+  const r = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+  const { createHash } = require('crypto');
+  const { id, resultSha256, ...body } = r;
+  if (createHash('sha256').update(JSON.stringify(body)).digest('hex') !== resultSha256) throw new Error('result hash');
+  let ok = 0;
+  for (const it of r.items) if (String(it.label) === it.name.split('label')[1][0]) ok++;
+  if (r.items.length !== 24 || ok !== 24) throw new Error('labels: ' + ok + '/' + r.items.length);
+  console.log('inference: ' + ok + '/24 correct in ' + r.summary.batches + ' batches,', JSON.stringify(r.summary.accelerators));
+" || fail "bad inference result"
+
 echo "== hostile job is refused by the control plane"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/v1/jobs" -H "authorization: Bearer $OP" -H 'content-type: application/json' \
   -d '{"type":"shell","input":{"cmd":"whoami"}}')

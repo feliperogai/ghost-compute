@@ -8,7 +8,9 @@ export type AttemptOutcome =
   /** Worker vanished (offline, stopped reporting the assignment) or was revoked. */
   | { kind: 'lost' }
   /** Job failed on the worker. `retryable` = environment problem rather than bad input. */
-  | { kind: 'failed'; retryable: boolean };
+  | { kind: 'failed'; retryable: boolean }
+  /** Attempt ran past the job's timeout (only for resumable jobs; others end as TIMEOUT). */
+  | { kind: 'timeout' };
 
 export type RetryDecision = 'REQUEUE' | 'FAIL';
 
