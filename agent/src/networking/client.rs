@@ -165,6 +165,56 @@ impl ApiClient {
         }
     }
 
+    /// Raw bytes (image data). At most `max` bytes are read; the caller verifies the hash.
+    pub async fn get_bytes(&self, path: &str, max: usize) -> Result<Vec<u8>, ApiError> {
+        let mut forced = false;
+        loop {
+            let token = self.access_token(forced).await?;
+            let mut res = self
+                .http
+                .get(self.url(path))
+                .header("x-request-id", Uuid::new_v4().to_string())
+                .bearer_auth(token.expose())
+                .send()
+                .await
+                .map_err(ApiError::Network)?;
+            let status = res.status();
+            if status == StatusCode::UNAUTHORIZED && !forced {
+                forced = true;
+                continue;
+            }
+            if !status.is_success() {
+                let (code, message) = match res.json::<ErrorBody>().await {
+                    Ok(b) => (b.error.code, b.error.message),
+                    Err(_) => ("UNKNOWN".into(), status.canonical_reason().unwrap_or("").into()),
+                };
+                if code == "WORKER_REVOKED" {
+                    return Err(ApiError::Revoked);
+                }
+                return Err(ApiError::Http { status, code, message });
+            }
+            if res.content_length().is_some_and(|n| n > max as u64) {
+                return Err(ApiError::Http { status, code: "TOO_LARGE".into(), message: "response too large".into() });
+            }
+            let mut buf = Vec::new();
+            while let Some(chunk) = res.chunk().await.map_err(ApiError::Network)? {
+                if buf.len() + chunk.len() > max {
+                    return Err(ApiError::Http {
+                        status,
+                        code: "TOO_LARGE".into(),
+                        message: "response too large".into(),
+                    });
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            return Ok(buf);
+        }
+    }
+
+    pub async fn assignment_image(&self, id: Uuid, index: u32, max: usize) -> Result<Vec<u8>, ApiError> {
+        self.get_bytes(&format!("/v1/worker/assignments/{id}/images/{index}"), max).await
+    }
+
     pub async fn heartbeat(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, ApiError> {
         self.call(Method::POST, "/v1/worker/heartbeat", Some(req)).await
     }
@@ -187,9 +237,23 @@ impl ApiClient {
     }
 
     pub async fn assignment_progress(&self, id: Uuid, progress: f32, stage: Option<&str>) -> Result<(), ApiError> {
+        self.assignment_checkpoint(id, progress, stage, None).await
+    }
+
+    /// Progress plus partial results; the server hands them to the next attempt.
+    pub async fn assignment_checkpoint(
+        &self,
+        id: Uuid,
+        progress: f32,
+        stage: Option<&str>,
+        checkpoint: Option<&serde_json::Value>,
+    ) -> Result<(), ApiError> {
         let mut body = serde_json::json!({ "progress": progress.clamp(0.0, 1.0) });
         if let Some(s) = stage {
             body["stage"] = s.into();
+        }
+        if let Some(c) = checkpoint {
+            body["checkpoint"] = c.clone();
         }
         self.call::<_, serde_json::Value>(Method::POST, &format!("/v1/worker/assignments/{id}/progress"), Some(&body))
             .await

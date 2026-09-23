@@ -1,0 +1,19 @@
+[package]
+name = "ghost-workload-image-inference"
+version = "1.0.0"
+edition = "2021"
+description = "Built-in ghost workload: image classification (digits MLP) compiled to WebAssembly"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
