@@ -61,6 +61,8 @@ export function reasonText(r: Reason): string {
       return `Memória quase cheia: ${pct(r.percent)} (limite ${pct(r.limit)})`;
     case 'owner_active':
       return `Você está usando o computador (sem uso há ${fmtDur(r.idle_secs)}; precisa de ${fmtDur(r.required)})`;
+    case 'presence_unknown':
+      return 'Não dá para saber se você está usando o computador: deixe o app ghost aberto (ícone perto do relógio)';
     case 'session_unlocked':
       return 'Sessão desbloqueada: configurado para usar só com o computador bloqueado';
     case 'game_running':

@@ -103,6 +103,11 @@ fn read_array(counter: isize) -> Option<Vec<(String, f64)>> {
 /// Seconds since the last input in *this* session. From the service (session 0)
 /// this is meaningless; the tray app will report it over IPC in a later phase.
 pub fn user_idle_secs() -> Option<u64> {
+    // A service runs in session 0, which has no keyboard or mouse: its "idle time" says
+    // nothing about the owner. Only the desktop app (in the owner's session) can tell.
+    if in_service_session() {
+        return None;
+    }
     let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
     unsafe {
         if !GetLastInputInfo(&mut info).as_bool() {
@@ -147,4 +152,12 @@ mod tests {
         let _ = user_idle_secs();
         let _ = on_battery();
     }
+}
+
+/// Whether this process runs in session 0 (Windows services).
+pub fn in_service_session() -> bool {
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    let mut session = u32::MAX;
+    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) }.is_ok() && session == 0
 }

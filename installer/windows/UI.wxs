@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Installer pages (WixUI standard dialogs + our own):
+
+    install:  Welcome → Como funciona (resources, when, pause, remove) → Conectar e opções
+              → Pronto → progresso → Concluído (sharing is OFF; open the app)
+    removal:  Manutenção → O que a remoção faz → Pronto → progresso → Concluído
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <UI Id="GhostUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Segoe UI" Size="9" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Segoe UI" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Segoe UI" Size="9" Bold="yes" />
+      <TextStyle Id="Ghost_Font_Emphasis" FaceName="Segoe UI" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <Property Id="WixUI_Mode" Value="Minimal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+      <DialogRef Id="WelcomeDlg" />
+      <DialogRef Id="VerifyReadyDlg" />
+      <DialogRef Id="MaintenanceWelcomeDlg" />
+      <DialogRef Id="MaintenanceTypeDlg" />
+      <DialogRef Id="ExitDialog" />
+
+      <!-- Install -->
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="HowItWorksDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="HowItWorksDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="HowItWorksDlg" Control="Next" Event="NewDialog" Value="ConnectDlg" Condition="GHOST_UNDERSTOOD = 1" />
+
+      <Publish Dialog="ConnectDlg" Control="Back" Event="NewDialog" Value="HowItWorksDlg" />
+      <Publish Dialog="ConnectDlg" Control="Next" Event="SpawnDialog" Value="InvalidServerDlg" Order="1"
+               Condition="NOT (SERVER_URL &lt;&lt; &quot;https://&quot;)" />
+      <Publish Dialog="ConnectDlg" Control="Next" Event="SpawnDialog" Value="InvalidTokenDlg" Order="2"
+               Condition="(SERVER_URL &lt;&lt; &quot;https://&quot;) AND ENROLLMENT_TOKEN AND NOT (ENROLLMENT_TOKEN &lt;&lt; &quot;ghe_&quot;)" />
+      <Publish Dialog="ConnectDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="3"
+               Condition="(SERVER_URL &lt;&lt; &quot;https://&quot;) AND (NOT ENROLLMENT_TOKEN OR (ENROLLMENT_TOKEN &lt;&lt; &quot;ghe_&quot;))" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ConnectDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="RemoveInfoDlg" Order="2" Condition="Installed AND WixUI_InstallMode = &quot;Remove&quot;" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="3" Condition="Installed AND NOT (WixUI_InstallMode = &quot;Remove&quot;)" />
+
+      <!-- Maintenance (repair / remove) -->
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="RemoveInfoDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+      <Publish Dialog="RemoveInfoDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="RemoveInfoDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" />
+
+      <!-- End -->
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApp" Order="1"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <InstallUISequence>
+        <Show Dialog="WelcomeDlg" Before="ProgressDlg" Condition="NOT Installed OR PATCH" />
+        <Show Dialog="MaintenanceWelcomeDlg" Before="ProgressDlg" Condition="Installed AND NOT RESUME AND NOT Preselected AND NOT PATCH" />
+      </InstallUISequence>
+    </UI>
+
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.ExitLaunchApp)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="!(loc.ExitText)" />
+
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
+
+  <!-- Como o ghost funciona ================================================ -->
+  <Fragment>
+    <UI>
+      <Dialog Id="HowItWorksDlg" Width="370" Height="270" Title="!(loc.DialogTitle)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.HowItWorksDescription)" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.HowItWorksTitle)" />
+        <Control Id="Explanation" Type="ScrollableText" X="20" Y="52" Width="330" Height="158" Sunken="yes" TabSkip="no">
+          <Text SourceFile="$(HowItWorksRtf)" />
+        </Control>
+        <Control Id="Understood" Type="CheckBox" X="20" Y="214" Width="330" Height="16" CheckBoxValue="1" Property="GHOST_UNDERSTOOD" Text="!(loc.HowItWorksUnderstood)" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)"
+                 DisableCondition="GHOST_UNDERSTOOD &lt;&gt; 1" EnableCondition="GHOST_UNDERSTOOD = 1" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+    </UI>
+  </Fragment>
+
+  <!-- Conectar e opções ===================================================== -->
+  <Fragment>
+    <UI>
+      <Dialog Id="ConnectDlg" Width="370" Height="270" Title="!(loc.DialogTitle)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.ConnectDescription)" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.ConnectTitle)" />
+
+        <Control Id="Intro" Type="Text" X="20" Y="50" Width="330" Height="26" NoPrefix="yes" Text="!(loc.ConnectIntro)" />
+        <Control Id="ServerLabel" Type="Text" X="20" Y="80" Width="330" Height="10" NoPrefix="yes" Text="!(loc.ConnectServerLabel)" />
+        <Control Id="Server" Type="Edit" X="20" Y="91" Width="330" Height="16" Property="SERVER_URL" Text="{200}" />
+        <Control Id="TokenLabel" Type="Text" X="20" Y="112" Width="330" Height="18" NoPrefix="yes" Text="!(loc.ConnectTokenLabel)" />
+        <Control Id="Token" Type="Edit" X="20" Y="131" Width="330" Height="16" Property="ENROLLMENT_TOKEN" Password="yes" Text="{120}" />
+        <Control Id="TokenHelp" Type="Text" X="20" Y="150" Width="330" Height="18" NoPrefix="yes" Text="!(loc.ConnectTokenHelp)" />
+
+        <Control Id="Autostart" Type="CheckBox" X="20" Y="172" Width="330" Height="26" CheckBoxValue="1" Property="AUTOSTART_APP" Text="!(loc.ConnectAutostart)" />
+        <Control Id="Desktop" Type="CheckBox" X="20" Y="200" Width="330" Height="14" CheckBoxValue="1" Property="DESKTOP_SHORTCUT" Text="!(loc.ConnectDesktopShortcut)" />
+        <Control Id="Firewall" Type="CheckBox" X="20" Y="215" Width="330" Height="14" CheckBoxValue="1" Property="FIREWALL_RULE" Text="!(loc.ConnectFirewall)" />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="InvalidServerDlg" Width="260" Height="85" Title="!(loc.DialogTitle)" NoMinimize="yes">
+        <Control Id="Text" Type="Text" X="15" Y="15" Width="230" Height="40" NoPrefix="yes" Text="!(loc.InvalidServer)" />
+        <Control Id="OK" Type="PushButton" X="102" Y="60" Width="56" Height="17" Default="yes" Cancel="yes" Text="!(loc.WixUIOK)">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+      <Dialog Id="InvalidTokenDlg" Width="260" Height="85" Title="!(loc.DialogTitle)" NoMinimize="yes">
+        <Control Id="Text" Type="Text" X="15" Y="15" Width="230" Height="40" NoPrefix="yes" Text="!(loc.InvalidToken)" />
+        <Control Id="OK" Type="PushButton" X="102" Y="60" Width="56" Height="17" Default="yes" Cancel="yes" Text="!(loc.WixUIOK)">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+    </UI>
+  </Fragment>
+
+  <!-- O que a remoção faz =================================================== -->
+  <Fragment>
+    <UI>
+      <Dialog Id="RemoveInfoDlg" Width="370" Height="270" Title="!(loc.DialogTitle)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.RemoveDescription)" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.RemoveTitle)" />
+        <Control Id="Body" Type="Text" X="20" Y="54" Width="330" Height="170" NoPrefix="yes" Text="!(loc.RemoveBody)" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+    </UI>
+  </Fragment>
+</Wix>

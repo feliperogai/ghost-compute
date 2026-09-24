@@ -46,6 +46,7 @@ describe('reasons', () => {
     );
     expect(reasonText({ reason: 'too_hot', celsius: 88.6, limit: 85 })).toBe('Temperatura alta: 89 °C (limite 85 °C)');
     expect(reasonText({ reason: 'owner_active', idle_secs: 12, required: 300 })).toMatch(/12 s.*5 min/);
+    expect(reasonText({ reason: 'presence_unknown' })).toMatch(/deixe o app ghost aberto/);
     expect(reasonText({ reason: 'priority_app_running', app: 'obs64' })).toMatch(/obs64/);
     expect(reasonText({ reason: 'cooling_down', remaining_secs: 45 })).toMatch(/45 s/);
   });

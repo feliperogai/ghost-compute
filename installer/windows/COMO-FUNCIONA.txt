@@ -1,0 +1,81 @@
+ghost Worker — como funciona neste computador
+=============================================
+
+Este texto é mostrado durante a instalação e fica instalado em
+"Menu Iniciar > ghost > Como o ghost funciona". Nada do que o ghost faz
+fica escondido: tudo o que roda aparece no app ghost (ícone perto do relógio).
+
+
+1. O QUE É INSTALADO
+--------------------
+- O serviço "ghost Worker" (nome técnico GhostWorker). Roda em segundo
+  plano com uma conta própria, sem privilégios de administrador
+  (NT SERVICE\GhostWorker), e aparece em "Serviços" do Windows.
+- O app "ghost": painel deste computador. Mostra o que o ghost está
+  fazendo e tem os botões Iniciar, Pausar e Parar. Fica perto do relógio.
+- Uma pasta de dados em C:\ProgramData\ghost (configuração, credenciais
+  protegidas pelo Windows, registros). Só administradores e o serviço
+  conseguem abri-la.
+- Uma regra do Firewall do Windows que PROÍBE o processo que executa os
+  trabalhos (ghost-sandbox.exe) de acessar a rede. Nenhuma porta é aberta
+  neste computador; o ghost só faz conexões de saída (HTTPS) para o
+  servidor configurado.
+
+
+2. QUAIS RECURSOS SÃO USADOS
+----------------------------
+Os valores abaixo são os padrões. Você muda todos no app, em
+Configurações, e o servidor nunca pode aumentá-los.
+
+- Processador: no máximo 25% do computador inteiro.
+- Memória: no máximo 2 GB.
+- Placa de vídeo (GPU): NÃO é usada até você permitir.
+- Temperatura: tudo para se algum sensor passar de 85 °C.
+- Rede: conexões de saída HTTPS para o servidor, para receber trabalhos
+  e devolver resultados, e de vez em quando para medir a velocidade da
+  conexão (calibração).
+- Disco: arquivos temporários de cada trabalho, apagados ao terminar.
+- Energia: nunca roda com o notebook na bateria.
+
+O que é enviado ao servidor: modelo do processador, da placa de vídeo e
+quantidade de memória; uso de processador, memória e temperatura; o
+estado do ghost (parado, esperando, executando). O ghost não lê seus
+arquivos, documentos, fotos nem o que você digita.
+
+
+3. QUANDO O COMPUTADOR PODE EXECUTAR TRABALHOS
+----------------------------------------------
+- NUNCA antes de você abrir o app e clicar em "Iniciar compartilhamento".
+  A instalação e a conexão da conta NÃO ligam o compartilhamento.
+- Depois de iniciado, só quando TODAS estas condições valem:
+  * ninguém usa teclado ou mouse há 5 minutos;
+  * não há jogo, vídeo ou apresentação em tela cheia;
+  * você não está usando mais de 30% do processador nem 80% da memória;
+  * o computador está na tomada e abaixo de 85 °C;
+  * está dentro dos horários que você definir (padrão: qualquer horário).
+- Quando você volta a usar o computador, o ghost cede na hora.
+- Só rodam tipos de trabalho registrados na plataforma (medição de
+  desempenho, classificação de imagens), dentro de uma área isolada
+  (sandbox) sem acesso aos seus arquivos nem à rede. Nenhum programa
+  enviado por outras pessoas é executado.
+
+
+4. COMO PAUSAR
+--------------
+- Ícone do ghost perto do relógio (botão direito) > "Pausar" ou "Parar".
+- Ou abra o app ghost e clique em "Pausar" ou "Parar".
+- O efeito é imediato: um trabalho em andamento é interrompido.
+- Para desligar o ghost por completo: "Serviços" do Windows >
+  "ghost Worker" > Parar (ou Tipo de inicialização: Desativado).
+
+
+5. COMO REMOVER
+---------------
+- Configurações do Windows > Aplicativos > "ghost Worker" > Desinstalar;
+  ou Menu Iniciar > ghost > "Desinstalar ghost".
+- A remoção apaga: o serviço, os programas, os atalhos, a regra de
+  firewall, a inicialização automática do app e toda a pasta
+  C:\ProgramData\ghost (inclusive as credenciais). Antes, avisa o
+  servidor de que este computador saiu da plataforma, para que nenhum
+  trabalho seja mais enviado para ele.
+- Nada fica para trás.

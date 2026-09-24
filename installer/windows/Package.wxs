@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ghost Worker — Windows Installer package (WiX Toolset v5).
+
+  Build: installer/windows/build.ps1 (CI: .github/workflows/installer.yml).
+  Nothing here is hidden from the owner: every change to the machine is listed in
+  COMO-FUNCIONA.txt, shown before installing and installed next to the program.
+
+  Variables (-d): Version, BinDir (ghost-agent.exe, ghost-sandbox.exe), DesktopExe,
+  ServerUrl (default server), IconFile, ReadmeFile, HowItWorksRtf.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="ghost Worker"
+           Manufacturer="ghost"
+           Version="$(Version)"
+           UpgradeCode="EE30AAE9-4329-4229-A146-A4CBDC6E1042"
+           Scope="perMachine"
+           Language="1046"
+           Codepage="1252"
+           InstallerVersion="500">
+
+    <SummaryInformation Description="!(loc.PackageDescription)" Keywords="ghost, worker" />
+
+    <!-- Upgrades replace the old version but keep the owner's data (see UninstallCleanup). -->
+    <MajorUpgrade DowngradeErrorMessage="!(loc.Downgrade)" Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Launch Condition="VersionNT64" Message="!(loc.Need64)" />
+    <!-- 603 = Windows 8.1/10/11 as reported to MSI; the agent needs Windows 10 or later. -->
+    <Launch Condition="Installed OR VersionNT &gt;= 603" Message="!(loc.NeedWindows10)" />
+
+    <Icon Id="ghost.ico" SourceFile="$(IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="ghost.ico" />
+    <Property Id="ARPCOMMENTS" Value="!(loc.ArpComments)" />
+    <Property Id="ARPURLINFOABOUT" Value="$(ServerUrl)" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- Choices made in the installer (also settable on the msiexec command line). -->
+    <Property Id="SERVER_URL" Value="$(ServerUrl)" Secure="yes" />
+    <!-- One-time connection code. Hidden: never written to installer logs by MSI. -->
+    <Property Id="ENROLLMENT_TOKEN" Hidden="yes" Secure="yes" />
+    <Property Id="DESKTOP_SHORTCUT" Value="1" Secure="yes" />
+    <Property Id="AUTOSTART_APP" Value="1" Secure="yes" />
+    <Property Id="FIREWALL_RULE" Value="1" Secure="yes" />
+    <!-- Development only: plain HTTP to a loopback server. -->
+    <Property Id="DEV_ALLOW_INSECURE_LOCALHOST" Secure="yes" />
+
+    <!-- Files ================================================================== -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ghost" />
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATAFOLDER" Name="ghost" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="MenuFolder" Name="ghost" />
+    </StandardDirectory>
+
+    <Feature Id="Worker" Title="ghost Worker" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="Program" />
+      <ComponentGroupRef Id="Data" />
+      <ComponentGroupRef Id="Shortcuts" />
+    </Feature>
+
+    <ComponentGroup Id="Program" Directory="INSTALLFOLDER">
+      <!-- The service: its own virtual account (no admin rights), restarted if it crashes. -->
+      <Component Id="AgentService">
+        <File Id="AgentExe" Source="$(BinDir)\ghost-agent.exe" KeyPath="yes" />
+        <ServiceInstall Id="GhostWorkerService"
+                        Name="GhostWorker"
+                        DisplayName="ghost Worker"
+                        Description="!(loc.ServiceDescription)"
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="NT SERVICE\GhostWorker"
+                        Arguments="service"
+                        Vital="yes">
+          <ServiceConfig DelayedAutoStart="yes" ServiceSid="unrestricted" OnInstall="yes" OnReinstall="yes" />
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="none"
+                              RestartServiceDelayInSeconds="60"
+                              ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl Id="GhostWorkerControl" Name="GhostWorker" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+      <Component Id="Sandbox">
+        <File Id="SandboxExe" Source="$(BinDir)\ghost-sandbox.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="DesktopApp">
+        <File Id="DesktopExe" Name="ghost.exe" Source="$(DesktopExe)" KeyPath="yes" />
+      </Component>
+      <Component Id="Readme">
+        <File Id="ReadmeFile" Name="COMO-FUNCIONA.txt" Source="$(ReadmeFile)" KeyPath="yes" />
+      </Component>
+      <!-- The app starts with Windows in the tray: it is how the service knows whether
+           someone is using the computer (a service cannot see the keyboard or mouse). -->
+      <Component Id="AutostartApp" Condition="AUTOSTART_APP = 1">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="ghost"
+                       Type="string" Value="&quot;[#DesktopExe]&quot; --background" KeyPath="yes" />
+      </Component>
+      <!-- Everything under HKLM\SOFTWARE\ghost goes away on removal. -->
+      <Component Id="InstallInfo">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\ghost" ForceDeleteOnUninstall="yes">
+          <RegistryValue Key="Worker" Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+          <RegistryValue Key="Worker" Name="DataFolder" Type="string" Value="[DATAFOLDER]" />
+        </RegistryKey>
+      </Component>
+    </ComponentGroup>
+
+    <!-- Data folder: SYSTEM, Administrators and the service only (no read access for
+         other users: it holds the computer's credentials). Protected: nothing inherited. -->
+    <ComponentGroup Id="Data" Directory="DATAFOLDER">
+      <Component Id="DataFolder" Guid="2F6296C5-F765-468C-972D-5B96628742E9">
+        <CreateFolder>
+          <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;S-1-5-80-2759458500-2554202913-3312571460-69571322-4272459962)" />
+        </CreateFolder>
+        <RemoveFolder Id="RemoveDataFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\ghost\Worker" Name="DataFolderCreated" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <!-- Connection code typed in the installer: the service reads it once on start and
+           deletes the file. Only created when a code was given. -->
+      <Component Id="PendingEnrollment" Guid="873E341E-2C9D-4576-81FA-004622FF149B" Condition="ENROLLMENT_TOKEN">
+        <IniFile Id="EnrollIni" Action="createLine" Directory="DATAFOLDER" Name="enroll.ini" Section="enroll" Key="token" Value="[ENROLLMENT_TOKEN]" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\ghost\Worker" Name="ConnectedByInstaller" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Shortcuts">
+      <Component Id="MenuShortcuts" Directory="MenuFolder">
+        <Shortcut Id="MenuApp" Name="ghost" Description="!(loc.ShortcutAppDescription)"
+                  Target="[#DesktopExe]" WorkingDirectory="INSTALLFOLDER" Icon="ghost.ico" />
+        <Shortcut Id="MenuHowItWorks" Name="Como o ghost funciona" Description="!(loc.ShortcutHowDescription)"
+                  Target="[#ReadmeFile]" />
+        <Shortcut Id="MenuUninstall" Name="Desinstalar ghost" Description="!(loc.ShortcutUninstallDescription)"
+                  Target="[System64Folder]msiexec.exe" Arguments="/x [ProductCode]" />
+        <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\ghost\Worker" Name="MenuShortcuts" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="DesktopShortcut" Directory="DesktopFolder" Condition="DESKTOP_SHORTCUT = 1">
+        <Shortcut Id="DesktopApp" Name="ghost" Description="!(loc.ShortcutAppDescription)"
+                  Target="[#DesktopExe]" WorkingDirectory="INSTALLFOLDER" Icon="ghost.ico" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\ghost\Worker" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- The desktop app may be open in a user session: close it for upgrades/removal. -->
+    <util:CloseApplication Id="CloseDesktopApp" Target="ghost.exe" CloseMessage="yes" RebootPrompt="no" />
+
+    <!-- Custom actions ========================================================= -->
+    <!-- Write agent.toml with the chosen server (validated by the agent: https only). -->
+    <SetProperty Id="DEV_INSECURE_ARG" Before="InstallFiles" Sequence="execute"
+                 Condition="DEV_ALLOW_INSECURE_LOCALHOST" Value="--allow-insecure-localhost" />
+    <SetProperty Id="ConfigureAgent" Before="ConfigureAgent" Sequence="execute"
+                 Value="&quot;[#AgentExe]&quot; --config &quot;[DATAFOLDER]agent.toml&quot; configure --server-url &quot;[SERVER_URL]&quot; [DEV_INSECURE_ARG]" />
+    <CustomAction Id="ConfigureAgent" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="check" />
+
+    <!-- Firewall: no port is opened. One rule forbids the job sandbox any network use.
+         Remove-then-add keeps repairs and upgrades idempotent. -->
+    <SetProperty Id="AddFirewallRule" Before="AddFirewallRule" Sequence="execute"
+                 Value="&quot;[System64Folder]cmd.exe&quot; /d /s /c &quot;&quot;[System64Folder]netsh.exe&quot; advfirewall firewall delete rule name=&quot;ghost Worker: sandbox sem rede&quot; &gt;nul 2&gt;&amp;1 &amp; &quot;[System64Folder]netsh.exe&quot; advfirewall firewall add rule name=&quot;ghost Worker: sandbox sem rede&quot; dir=out action=block program=&quot;[#SandboxExe]&quot; enable=yes profile=any description=&quot;!(loc.FirewallRuleDescription)&quot;&quot;" />
+    <CustomAction Id="AddFirewallRule" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <SetProperty Id="RemoveFirewallRule" Before="RemoveFirewallRule" Sequence="execute"
+                 Value="&quot;[System64Folder]netsh.exe&quot; advfirewall firewall delete rule name=&quot;ghost Worker: sandbox sem rede&quot;" />
+    <CustomAction Id="RemoveFirewallRule" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <!-- Removal (not upgrades): tell the server this computer left, delete all local data. -->
+    <SetProperty Id="UninstallCleanup" Before="UninstallCleanup" Sequence="execute"
+                 Value="&quot;[#AgentExe]&quot; --config &quot;[DATAFOLDER]agent.toml&quot; uninstall-cleanup" />
+    <CustomAction Id="UninstallCleanup" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="ConfigureAgent" After="InstallFiles" Condition="NOT REMOVE=&quot;ALL&quot;" />
+      <Custom Action="AddFirewallRule" After="ConfigureAgent" Condition="NOT REMOVE=&quot;ALL&quot; AND FIREWALL_RULE = 1" />
+      <Custom Action="UninstallCleanup" After="StopServices" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RemoveFirewallRule" After="UninstallCleanup" Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+
+    <!-- Open the app at the end (checkbox on the last page). -->
+    <Property Id="WixShellExecTarget" Value="[#DesktopExe]" />
+    <CustomAction Id="LaunchApp" BinaryRef="Wix4UtilCA_X64" DllEntry="WixShellExec" Impersonate="yes" />
+
+    <UIRef Id="GhostUI" />
+  </Package>
+</Wix>

@@ -35,6 +35,9 @@ pub enum Reason {
     OwnerCpuBusy { percent: f32, limit: f32 },
     RamPressure { percent: f32, limit: f32 },
     OwnerActive { idle_secs: u64, required: u64 },
+    /// Idle time is required but nobody reports it (the service cannot see input; the
+    /// desktop app in the owner's session does). Unknown never counts as "away".
+    PresenceUnknown,
     SessionUnlocked,
     GameRunning,
     PriorityAppRunning { app: String },
@@ -120,10 +123,14 @@ impl Policy {
             violations.push(Reason::RamPressure { percent: ram, limit: l.user_ram_threshold_percent });
         }
         if l.require_idle_secs > 0 {
-            // Prefer the desktop app's view (real session); unknown idle is not treated as active.
-            let idle = presence.idle_secs.or(snap.latest.user_idle_secs);
-            if let Some(idle) = idle.filter(|i| *i < l.require_idle_secs) {
-                violations.push(Reason::OwnerActive { idle_secs: idle, required: l.require_idle_secs });
+            // Prefer the desktop app's view (real session). Unknown is never taken as "away":
+            // sharing waits until someone can tell that the owner is not using the computer.
+            match presence.idle_secs.or(snap.latest.user_idle_secs) {
+                Some(idle) if idle < l.require_idle_secs => {
+                    violations.push(Reason::OwnerActive { idle_secs: idle, required: l.require_idle_secs })
+                }
+                Some(_) => {}
+                None => violations.push(Reason::PresenceUnknown),
             }
         }
         // Explicit opt-in: unknown lock state counts as unlocked.
@@ -287,7 +294,7 @@ mod tests {
 
         let mut unknown_idle = snap(0.0);
         unknown_idle.latest.user_idle_secs = None;
-        assert!(matches!(eval(&mut p, &unknown_idle, t).reasons[0], Reason::CoolingDown { .. }));
+        assert_eq!(eval(&mut p, &unknown_idle, t).reasons[0], Reason::PresenceUnknown);
 
         assert_eq!(eval(&mut p, &Snapshot::default(), t).reasons, vec![Reason::NoData]);
     }
