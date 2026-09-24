@@ -4,7 +4,7 @@ import fixture from './fixtures/status.agent.json';
 import { AgentError, type AgentApi } from './api';
 import type { ActiveWorkload, ControlAction, Limits, Status } from './types';
 
-export type Scenario = 'waiting' | 'stopped' | 'paused' | 'ready' | 'running' | 'reconnecting' | 'noagent' | 'hot';
+export type Scenario = 'waiting' | 'stopped' | 'paused' | 'ready' | 'running' | 'reconnecting' | 'noagent' | 'hot' | 'not-enrolled';
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
@@ -128,6 +128,8 @@ export class MockAgent implements AgentApi {
 
   async status(): Promise<Status> {
     if (this.scenario === 'noagent') throw new AgentError('AGENT_UNREACHABLE', 'agent not reachable');
+    if (this.scenario === 'not-enrolled')
+      throw new AgentError('NOT_ENROLLED', 'computador não conectado ao ghost — servidor https://ghost.example.com');
     return { ...clone(this.st), generatedAt: new Date().toISOString() };
   }
 
@@ -138,6 +140,16 @@ export class MockAgent implements AgentApi {
     if (action === 'start')
       Object.assign(this.st, { control: 'started', state: 'waiting', reasons: [{ reason: 'cooling_down', remaining_secs: 60 }] });
     return this.status();
+  }
+
+  async enroll(token: string): Promise<{ workerId: string }> {
+    this.calls.push('enroll');
+    if (!/^gh[eu]_/.test(token.trim()))
+      throw new AgentError('BAD_TOKEN', 'o token deve começar com ghe_ (código de conexão) ou ghu_ (token da conta)');
+    if (token.includes('used')) throw new AgentError('REFUSED', 'o servidor recusou: token inválido, expirado ou já usado');
+    this.scenario = 'stopped';
+    this.st = scenarioStatus('stopped');
+    return { workerId: this.st.agent.workerId };
   }
 
   async saveSettings(limits: Limits): Promise<Limits> {

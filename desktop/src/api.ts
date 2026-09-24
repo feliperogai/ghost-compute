@@ -5,6 +5,8 @@ export interface AgentApi {
   status(): Promise<Status>;
   control(action: ControlAction): Promise<Status>;
   saveSettings(limits: Limits): Promise<Limits>;
+  /** Connects this computer (`ghe_…` connection code or `ghu_…` account token). */
+  enroll(token: string): Promise<{ workerId: string }>;
 }
 
 /** Error surfaced to the owner. `code` comes from the agent (e.g. INVALID_SETTINGS) or AGENT_UNREACHABLE. */
@@ -37,6 +39,7 @@ export function tauriApi(): AgentApi {
     status: () => call<Status>('agent_status'),
     control: (action) => call<Status>('agent_control', { action }),
     saveSettings: (limits) => call<Limits>('agent_save_settings', { limits }),
+    enroll: (token) => call<{ workerId: string }>('agent_enroll', { token }),
   };
 }
 

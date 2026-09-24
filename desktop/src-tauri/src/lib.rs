@@ -34,6 +34,13 @@ async fn agent_save_settings(limits: Value, link: State<'_, Link>) -> Result<Val
     link.call(methods::SETTINGS_SET, limits).await
 }
 
+/// Connects this computer. The token goes straight to the local agent (which uses it
+/// once and never stores an account token); the app keeps nothing.
+#[tauri::command]
+async fn agent_enroll(token: String, link: State<'_, Link>) -> Result<Value, UiError> {
+    link.call(methods::ENROLL, json!({ "token": token })).await
+}
+
 /// Same default as the agent (development on Linux/macOS); on Windows the pipe name is fixed.
 fn agent_data_dir() -> std::path::PathBuf {
     if let Some(d) = std::env::var_os("GHOST_DATA_DIR") {
@@ -121,9 +128,15 @@ pub fn run() {
     let link: Link = Arc::new(AgentLink::new(Endpoint::default_for(&agent_data_dir())));
     tauri::Builder::default()
         .manage(link.clone())
-        .invoke_handler(tauri::generate_handler![agent_status, agent_control, agent_save_settings])
+        .invoke_handler(tauri::generate_handler![agent_status, agent_control, agent_save_settings, agent_enroll])
         .setup(move |app| {
             build_tray(app.handle(), link.clone())?;
+            // Started with Windows (installer's Run entry, `--background`): live in the
+            // tray, always visible there, without opening a window over the owner's work.
+            // Opened by the owner: show the window.
+            if !std::env::args().any(|a| a == "--background") {
+                show_main(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
