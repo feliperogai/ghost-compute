@@ -1,5 +1,7 @@
 # Instalador Windows do ghost Worker
 
+Passo a passo para instalar e conferir: [README principal](../../README.md#instalar-um-worker-no-windows-passo-a-passo).
+
 Gera dois arquivos:
 
 | Arquivo | Para quem |
