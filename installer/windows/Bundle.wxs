@@ -9,7 +9,8 @@
   - Nothing else: the agent links the C runtime statically; GPU work uses Direct3D 12,
     part of Windows.
 
-  The Worker's own pages (how it works, connect, options) are shown by its MSI.
+  The first page shows COMO-FUNCIONA.txt (same text as the MSI page); the Worker's own
+  pages (how it works, connect, options) are then shown by its MSI.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
@@ -22,7 +23,7 @@
           Compressed="yes">
 
     <BootstrapperApplication>
-      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" SuppressOptionsUI="yes" SuppressRepair="yes" ShowVersion="yes" />
+      <bal:WixStandardBootstrapperApplication Theme="rtfLicense" LicenseFile="$(HowItWorksRtf)" SuppressOptionsUI="yes" SuppressRepair="yes" ShowVersion="yes" />
     </BootstrapperApplication>
 
     <!-- WebView2 is installed per machine (x64 registry view) or per user. -->
