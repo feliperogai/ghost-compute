@@ -4,6 +4,7 @@ import type { AppContext } from '../context.js';
 import { withTx } from '../db/pool.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../errors.js';
 import type { Role } from '../auth/plugin.js';
+import { checkDatasets, checkStorage } from '../modules/quotas.js';
 import { MAX_DATASET_BYTES, MAX_DATASET_IMAGES, MAX_IMAGE_BYTES } from './schemas.js';
 
 export interface Actor {
@@ -37,12 +38,13 @@ export function sniff(data: Buffer): 'image/png' | 'image/jpeg' | null {
 export class DatasetService {
   constructor(private readonly ctx: AppContext) {}
 
-  async create(name: string, ownerId: string) {
-    const { rows } = await this.ctx.db.query(`INSERT INTO datasets (owner_id, name) VALUES ($1, $2) RETURNING *`, [
-      ownerId,
-      name,
-    ]);
-    return toDto(rows[0]);
+  async create(name: string, actor: Actor) {
+    const row = await withTx(this.ctx.db, async (c) => {
+      await checkDatasets(this.ctx, c, actor.userId, actor.role);
+      const { rows } = await c.query(`INSERT INTO datasets (owner_id, name) VALUES ($1, $2) RETURNING *`, [actor.userId, name]);
+      return rows[0];
+    });
+    return toDto(row);
   }
 
   async get(id: string, actor: Actor) {
@@ -67,6 +69,8 @@ export class DatasetService {
     if (!kind || kind !== declared) throw new AppError(415, 'UNSUPPORTED_MEDIA', 'Only PNG and JPEG images, with a matching content type');
     const sha256 = createHash('sha256').update(data).digest('hex');
     return withTx(this.ctx.db, async (c) => {
+      // Account-wide storage first (locks the account), then this dataset.
+      await checkStorage(this.ctx, c, actor.userId, actor.role, data.length);
       const d = (await c.query(`SELECT * FROM datasets WHERE id = $1 FOR UPDATE`, [id])).rows[0];
       if (!d || d.owner_id !== actor.userId) throw notFound('Dataset');
       if (d.status !== 'OPEN') throw conflict('Dataset is sealed');

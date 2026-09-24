@@ -86,6 +86,9 @@ export async function holdForJobs(c: pg.PoolClient, ownerId: string, jobs: HoldR
   );
 }
 
+/** Slack over twice the fastest agreeing replica before billing stops counting. */
+export const STALL_GRACE_SECONDS = 30;
+
 const fmtCredits = (milli: number) => toCredits(milli).toLocaleString('pt-BR', { maximumFractionDigits: 3 });
 
 /**
@@ -114,31 +117,60 @@ export async function settleJob(c: pg.PoolClient, jobId: string) {
   );
   if (held <= 0) return null; // no hold (job created before credits existed)
   const job = (
-    await c.query<{ owner_id: string; status: string; resources: Resources; retry_on_timeout: boolean; timeout_seconds: number }>(
-      `SELECT owner_id, status, resources, retry_on_timeout, timeout_seconds FROM jobs WHERE id = $1`,
+    await c.query<{
+      owner_id: string;
+      status: string;
+      resources: Resources;
+      retry_on_timeout: boolean;
+      timeout_seconds: number;
+      verification: string;
+    }>(
+      `SELECT owner_id, status, resources, retry_on_timeout, timeout_seconds, verification FROM jobs WHERE id = $1`,
       [jobId],
     )
   ).rows[0];
   if (!job) return null;
-  const attempts =
-    job.status === 'COMPLETED'
-      ? (
-          await c.query<{ id: string; status: string; seconds: number; worker_id: string; name: string; price_rate: number | null; reserved: Resources }>(
-            `SELECT a.id, a.status, a.worker_id, w.name, a.price_rate, a.reserved,
-                    EXTRACT(EPOCH FROM (a.finished_at - a.started_at))::float8 AS seconds
-               FROM job_assignments a JOIN workers w ON w.id = a.worker_id
-              WHERE a.job_id = $1 AND a.started_at IS NOT NULL AND a.finished_at IS NOT NULL
-                AND (a.status = 'completed' OR (a.status = 'timeout' AND $2))
-              ORDER BY a.attempt`,
-            [jobId, job.retry_on_timeout],
-          )
-        ).rows
-      : [];
+  // Work that is paid for:
+  //   COMPLETED  → the result (verified jobs: only replicas that agreed) and resumable
+  //                timeouts whose checkpoint was used;
+  //   CANCELLED  → what ran until the customer cancelled (it asked for that work);
+  //   otherwise  → nothing: failed, timed out or disputed work is not paid.
+  const paidStatuses =
+    job.status === 'COMPLETED' ? ['completed', 'timeout'] : job.status === 'CANCELLED' ? ['completed', 'timeout', 'cancelled'] : [];
+  const attempts = paidStatuses.length
+    ? (
+        await c.query<{
+          id: string;
+          status: string;
+          seconds: number;
+          worker_id: string;
+          name: string;
+          price_rate: number | null;
+          reserved: Resources;
+          verdict: string | null;
+        }>(
+          `SELECT a.id, a.status, a.worker_id, w.name, a.price_rate, a.reserved, a.verdict,
+                  EXTRACT(EPOCH FROM (a.finished_at - a.started_at))::float8 AS seconds
+             FROM job_assignments a JOIN workers w ON w.id = a.worker_id
+            WHERE a.job_id = $1 AND a.started_at IS NOT NULL AND a.finished_at IS NOT NULL
+              AND a.status = ANY($2::text[])
+              AND (a.status <> 'timeout' OR $3)
+              AND (a.status <> 'completed' OR $4 = 'none' OR a.verdict = 'agreed' OR ($5 = 'CANCELLED' AND a.verdict IS NULL))
+            ORDER BY a.attempt`,
+          [jobId, paidStatuses, job.retry_on_timeout, job.verification, job.status],
+        )
+      ).rows
+    : [];
+  // Verified jobs have a yardstick: no replica is paid for more than twice the fastest
+  // agreeing replica (+30 s), so stalling before answering does not pay.
+  const agreed = attempts.filter((a) => a.verdict === 'agreed').map((a) => a.seconds);
+  const capSeconds = agreed.length ? 2 * Math.min(...agreed) + STALL_GRACE_SECONDS : Infinity;
   let left = held;
   const paid = attempts.map((a) => {
     // Attempts assigned before provider prices existed are paid at the standard rate.
     const rate = a.price_rate ?? ratePerMinute(a.reserved ?? job.resources);
-    const due = Math.min(attemptCharge(rate, a.seconds), maxAttemptCost(rate, job.timeout_seconds));
+    const billedSeconds = Math.min(a.seconds, capSeconds);
+    const due = Math.min(attemptCharge(rate, billedSeconds), maxAttemptCost(rate, job.timeout_seconds));
     const charge = Math.min(due, left);
     left -= charge;
     const seconds = Math.round(a.seconds * 1000) / 1000;
@@ -147,12 +179,14 @@ export async function settleJob(c: pg.PoolClient, jobId: string) {
       workerId: a.worker_id,
       status: a.status,
       seconds,
+      ...(billedSeconds < a.seconds ? { billedSeconds: Math.round(billedSeconds * 1000) / 1000 } : {}),
       ratePerMinute: rate,
       charge,
       summary:
         `Worker ${a.name} recebeu ${fmtCredits(charge)} créditos: ` +
-        `${(seconds / 60).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} min × ` +
+        `${(billedSeconds / 60).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} min × ` +
         `${fmtCredits(rate)} créditos/min (preço do provedor para os recursos reservados)` +
+        (billedSeconds < a.seconds ? `, tempo limitado a 2× a réplica mais rápida` : '') +
         (charge < due ? `, limitado pelo orçamento` : '') +
         '.',
     };
@@ -167,7 +201,9 @@ export async function settleJob(c: pg.PoolClient, jobId: string) {
   const memo =
     job.status === 'COMPLETED'
       ? `Job concluído: ${fmtCredits(cost)} créditos pagos ao(s) provedor(es), ${fmtCredits(refund)} devolvidos`
-      : `Job ${job.status}: orçamento de ${fmtCredits(held)} créditos devolvido`;
+      : job.status === 'CANCELLED' && cost > 0
+        ? `Job cancelado: ${fmtCredits(cost)} créditos pelo trabalho já feito, ${fmtCredits(refund)} devolvidos`
+        : `Job ${job.status}: orçamento de ${fmtCredits(held)} créditos devolvido`;
   const [tx] = await ledger.post([
     {
       kind: 'settlement',

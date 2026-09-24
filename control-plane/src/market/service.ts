@@ -4,6 +4,7 @@ import type { AppContext } from '../context.js';
 import { audit } from '../audit.js';
 import { conflict, notFound } from '../errors.js';
 import { createEnrollmentToken } from '../modules/admin/service.js';
+import { WorkerService } from '../modules/workers/service.js';
 import { CreditService } from '../credits/service.js';
 import { defaultBudget } from '../credits/service.js';
 import { PgSchedulerStore } from '../jobs/scheduler-store.js';
@@ -20,6 +21,7 @@ import {
   type OfferInput,
 } from './offer.js';
 import { loadReputations, type Reputation } from './reputation.js';
+import { MAX_REPLICAS } from '../jobs/verification.js';
 
 /** Unused enrollment tokens one account may hold at a time. */
 const MAX_OPEN_ENROLLMENTS = 10;
@@ -119,6 +121,11 @@ export class MarketService {
     };
   }
 
+  async revoke(userId: string, workerId: string, reason: string) {
+    await this.ownedWorker(userId, workerId);
+    return new WorkerService(this.ctx).revoke(workerId, reason, userId);
+  }
+
   async getOffer(userId: string, workerId: string) {
     const r = await this.ownedWorker(userId, workerId);
     return offerView(MarketService.offerOf(r), new Date());
@@ -207,8 +214,11 @@ export class MarketService {
     timeout: number;
     priority: number;
     budget?: number | undefined;
+    verification?: 'none' | 'replicate' | undefined;
   }) {
-    const budget = q.budget ?? defaultBudget(q.resources, q.timeout);
+    // Same defaults as job creation for a public account: verified, room for every replica.
+    const verification = q.verification ?? 'replicate';
+    const budget = q.budget ?? defaultBudget(q.resources, q.timeout) * (verification === 'replicate' ? MAX_REPLICAS : 1);
     const job: JobSpec = {
       id: '00000000-0000-0000-0000-000000000000',
       type: q.type,
@@ -242,6 +252,7 @@ export class MarketService {
     const eligible = rows.filter((r) => r.eligible);
     return {
       budget: credits(budget),
+      verification,
       budgetDefaulted: q.budget === undefined,
       eligible: eligible.length,
       bestMatch: eligible[0] ?? null,

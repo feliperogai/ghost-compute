@@ -97,7 +97,9 @@ export const createInferenceSchema = z
     /** Per batch attempt, seconds. A timed-out batch is retried from its checkpoint. */
     timeoutSeconds: z.number().int().min(10).max(86_400).default(600),
     maxAttempts: z.number().int().min(1).max(10).default(3),
-    /** Budget per batch, credits. Default: standard price × timeout × maxAttempts. */
+    /** Like jobs: replicate (default for public accounts) or none. Verified batches do not resume from checkpoints. */
+    verification: z.enum(['none', 'replicate']).optional(),
+    /** Budget per batch, credits. Default: standard price × timeout × (replicas or maxAttempts). */
     budgetPerBatch: creditAmount.optional(),
     /** Only providers with at least this reputation (0–1000). */
     minReputation: z.number().int().min(0).max(1000).optional(),

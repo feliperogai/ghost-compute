@@ -40,6 +40,34 @@ const envSchema = z.object({
   SIGNUP_CREDITS: z.coerce.number().int().min(0).max(1_000_000).default(100),
   /** Self-service accounts per IP per hour. */
   SIGNUP_PER_IP_PER_HOUR: z.coerce.number().int().min(1).max(10_000).default(5),
+  /**
+   * Which proxies may set X-Forwarded-For/-Proto. false (default): none — the socket peer
+   * is the client. A number: that many hops. Otherwise a comma list of IPs/CIDRs.
+   * Trusting everyone lets any client pick its own IP and walk around per-IP limits.
+   */
+  TRUST_PROXY: z
+    .string()
+    .default('false')
+    .transform((v): boolean | number | string[] =>
+      v === 'false' ? false : /^\d+$/.test(v) ? Number(v) : v.split(',').map((x) => x.trim()).filter(Boolean),
+    ),
+  /** Refuse plain-HTTP API requests (behind a TLS proxy: set TRUST_PROXY too). Adds HSTS. */
+  REQUIRE_TLS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  /** Requests per minute per credential (or per IP without one), across the whole API. */
+  RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(10).max(1_000_000).default(600),
+  /** Whole request, headers to last body byte (slow-client protection). */
+  REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(600_000).default(120_000),
+  /** Lifetime of tokens of public accounts; they can mint new ones and revoke old ones. */
+  MEMBER_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  /** Per public account: jobs not yet finished (queued, assigned, running). */
+  MEMBER_MAX_ACTIVE_JOBS: z.coerce.number().int().min(1).max(1_000_000).default(500),
+  /** Per public account: image storage across all datasets, bytes. */
+  MEMBER_STORAGE_BYTES: z.coerce.number().int().min(1).default(2 * 1024 * 1024 * 1024),
+  /** Per public account: datasets. */
+  MEMBER_MAX_DATASETS: z.coerce.number().int().min(1).max(100_000).default(50),
   MAX_BODY_BYTES: z.coerce.number().int().min(1024).default(1_048_576),
 });
 

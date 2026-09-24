@@ -27,7 +27,7 @@ export const jobRoutes =
     app.post(
       '/v1/jobs',
       { onRequest: requireUser(ctx, 'member'), schema: { body: createJobSchema } },
-      async (req, reply) => reply.status(201).send(await svc.create(req.body, userId(req))),
+      async (req, reply) => reply.status(201).send(await svc.create(req.body, userId(req), viewer(req).role)),
     );
 
     app.get(
