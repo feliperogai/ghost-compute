@@ -31,6 +31,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       WORKER_TOKEN_SECRET: ${WORKER_TOKEN_SECRET:?set WORKER_TOKEN_SECRET (min 32 chars)}
       LOG_LEVEL: info
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      REQUIRE_TLS: ${REQUIRE_TLS:-false}
     ports: ["8080:8080"]
 
 volumes:
