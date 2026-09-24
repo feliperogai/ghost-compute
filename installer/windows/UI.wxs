@@ -62,10 +62,7 @@
                Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
       <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
 
-      <InstallUISequence>
-        <Show Dialog="WelcomeDlg" Before="ProgressDlg" Condition="NOT Installed OR PATCH" />
-        <Show Dialog="MaintenanceWelcomeDlg" Before="ProgressDlg" Condition="Installed AND NOT RESUME AND NOT Preselected AND NOT PATCH" />
-      </InstallUISequence>
+      <!-- WelcomeDlg and MaintenanceWelcomeDlg schedule themselves (WixUI library). -->
     </UI>
 
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.ExitLaunchApp)" />
