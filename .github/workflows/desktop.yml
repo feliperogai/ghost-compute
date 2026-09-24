@@ -54,7 +54,7 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test
       - run: npx tauri build --bundles msi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ghost-desktop-msi
           path: desktop/src-tauri/target/release/bundle/msi/*.msi
