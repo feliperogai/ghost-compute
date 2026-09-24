@@ -12,6 +12,10 @@ use tokio::sync::watch;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// On Windows the IPC pipe name is fixed (one agent per machine), so tests that run a
+/// supervisor must not overlap.
+static ONE_AGENT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn server() -> MockServer {
     let s = MockServer::start().await;
     let unauthorized = || {
@@ -105,6 +109,7 @@ async fn wait_status(c: &mut IpcClient) -> Value {
 
 #[tokio::test]
 async fn not_connected_until_the_owner_signs_in_from_the_desktop_app() {
+    let _one = ONE_AGENT.lock().await;
     let s = server().await;
     let data = tempfile::tempdir().unwrap();
     let cfg = config(&s, data.path());
@@ -154,6 +159,7 @@ async fn not_connected_until_the_owner_signs_in_from_the_desktop_app() {
 
 #[tokio::test]
 async fn the_installer_token_is_consumed_once_and_deleted() {
+    let _one = ONE_AGENT.lock().await;
     let s = server().await;
     let data = tempfile::tempdir().unwrap();
     let cfg = config(&s, data.path());
@@ -170,6 +176,7 @@ async fn the_installer_token_is_consumed_once_and_deleted() {
 
 #[tokio::test]
 async fn a_bad_installer_token_leaves_the_service_waiting_with_the_reason() {
+    let _one = ONE_AGENT.lock().await;
     let s = server().await;
     let data = tempfile::tempdir().unwrap();
     let cfg = config(&s, data.path());
