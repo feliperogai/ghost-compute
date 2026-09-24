@@ -11,6 +11,8 @@ import { assignmentRoutes, jobRoutes } from './jobs/routes.js';
 import { registerWebSocket } from './events/ws.js';
 import { inferenceRoutes, workerImageRoutes } from './inference/routes.js';
 import { calibrationWorkerRoutes, performanceRoutes } from './performance/routes.js';
+import { HttpMetrics } from './observability/http-metrics.js';
+import { dashboardRoutes, serveDashboard } from './observability/routes.js';
 
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({
@@ -37,6 +39,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   app.setErrorHandler(errorHandler);
+  new HttpMetrics(ctx.db).register(app);
   app.setNotFoundHandler((req, reply) =>
     reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Route not found', requestId: req.id } }),
   );
@@ -66,6 +69,8 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   await app.register(workerImageRoutes(ctx));
   await app.register(calibrationWorkerRoutes(ctx));
   await app.register(performanceRoutes(ctx));
+  await app.register(dashboardRoutes(ctx));
+  await serveDashboard(app);
   registerWebSocket(app, ctx);
 
   return app;

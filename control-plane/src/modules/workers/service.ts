@@ -258,6 +258,20 @@ export class WorkerService {
 
     const cancelAssignmentIds = await this.jobs.touch(workerId, hb.activeAssignmentIds);
 
+    // History for the dashboard: at most one sample per worker per minute.
+    const u = hb.usage;
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    await this.ctx.db
+      .query(
+        `INSERT INTO worker_metrics (worker_id, state, cpu_percent, cpu_ghost_percent, ram_used_mb, ram_ghost_mb,
+                                     gpu_percent, temperature_c, active_assignments)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
+          WHERE NOT EXISTS (SELECT 1 FROM worker_metrics WHERE worker_id = $1 AND ts > now() - interval '55 seconds')`,
+        [workerId, hb.state, num(u.cpuPercent), num(u.cpuGhostPercent), num(u.ramUsedMb), num(u.ramGhostMb),
+         num(u.gpuPercent), num(u.temperatureC), hb.activeAssignmentIds.length],
+      )
+      .catch(() => {});
+
     if (row.prev_state !== row.state) {
       const type = row.prev_state === 'offline' ? 'worker.online' : 'worker.state';
       await this.ctx.bus.publish(type, { workerId, from: row.prev_state, to: row.state });

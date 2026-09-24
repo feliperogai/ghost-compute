@@ -101,6 +101,7 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 | GET | `/v1/worker/calibration/ping` · `/:id/download` · POST `/:id/upload` · `/:id/report` | worker | calibração: latência, banda (stream por nonce), relatório verificado ([ADR 005](../docs/adr/005-worker-calibration.md)) |
 | GET | `/v1/workers/:id/profile` | viewer | `WorkerPerformanceProfile`, resumo, throughput observado, histórico |
 | POST | `/v1/workers/:id/calibrate` | admin | forçar nova calibração |
+| GET | `/v1/dashboard/overview` · `/history?range=1h\|6h\|24h\|7d` · `/workers` · `/workers/:id` · `/errors` | viewer | observabilidade para o [painel](../dashboard/) (servido em `/dashboard/`) |
 | GET | `/healthz` · `/readyz` | — | liveness / readiness |
 
 ## WebSocket `GET /v1/ws`
@@ -112,6 +113,14 @@ Autenticação por header `Authorization` ou primeira mensagem `{"type":"auth","
 - **Worker** recebe `job.assigned`, `assignment.cancel`, `worker.revoked` (a conexão fecha com código 4003). Ofertas pendentes são reenviadas ao conectar.
 
 Códigos de fechamento: 4001 não autorizado · 4003 revogado · 4008 timeout de auth · 1008 rate limit.
+
+## Métricas
+
+- **Latência e erros da API:** histograma por minuto e por instância, na tabela `api_metrics`.
+- **Erros 5xx:** gravados com o request id na tabela `api_errors`.
+- **Por worker:** uma amostra por minuto, a partir dos heartbeats, em `worker_metrics`.
+- **Rede inteira:** um snapshot por minuto em `network_metrics`, gravado por uma instância de cada vez.
+- **Retenção:** 7 dias.
 
 ## Logs
 
