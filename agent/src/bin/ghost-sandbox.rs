@@ -42,6 +42,10 @@ fn wasm_fail(e: WasmError) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    // Confine first: nothing from the request is parsed before the walls are up.
+    if let Err(e) = ghost_agent::security::confine::confine_sandbox() {
+        return fail("CONFINE_FAILED", format!("cannot confine the sandbox: {e}"));
+    }
     let mut stdin = std::io::BufReader::with_capacity(1 << 16, std::io::stdin().lock());
     let mut line = Vec::new();
     let n = (&mut stdin).take(MAX_LINE as u64 + 1).read_until(b'\n', &mut line);
