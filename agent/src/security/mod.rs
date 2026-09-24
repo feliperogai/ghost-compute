@@ -1,5 +1,6 @@
 //! Security primitives: TLS policy, secrets, device identity and credential storage.
 
+pub mod confine;
 pub mod credentials;
 #[cfg(windows)]
 mod dpapi;
