@@ -125,3 +125,5 @@ if ($failures.Count) {
   exit 1
 }
 Write-Host "`nall checks passed"
+# Native commands above (e.g. `status` answering NOT_ENROLLED) leave $LASTEXITCODE set.
+exit 0
