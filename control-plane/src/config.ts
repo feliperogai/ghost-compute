@@ -31,6 +31,15 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   /** Virtual credits given to every new user (internal, non-monetary). 0 = none. */
   CREDITS_INITIAL_GRANT: z.coerce.number().int().min(0).max(1_000_000_000).default(1000),
+  /** Anyone may create a public account (role member) with POST /v1/signup. */
+  OPEN_SIGNUP: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  /** Virtual credits for self-service accounts (lower than staff grants: accounts are free to create). */
+  SIGNUP_CREDITS: z.coerce.number().int().min(0).max(1_000_000).default(100),
+  /** Self-service accounts per IP per hour. */
+  SIGNUP_PER_IP_PER_HOUR: z.coerce.number().int().min(1).max(10_000).default(5),
   MAX_BODY_BYTES: z.coerce.number().int().min(1024).default(1_048_576),
 });
 

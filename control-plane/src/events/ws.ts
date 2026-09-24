@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import { z } from 'zod';
 import type { AppContext } from '../context.js';
-import { bearer, resolveUserToken, resolveWorkerToken, type Principal } from '../auth/plugin.js';
+import { bearer, isStaff, resolveUserToken, resolveWorkerToken, type Principal } from '../auth/plugin.js';
 import { JobLifecycle } from '../jobs/lifecycle.js';
 import type { PlatformEvent } from './bus.js';
 
@@ -67,6 +67,11 @@ export function registerWebSocket(app: FastifyInstance, ctx: AppContext) {
     const onAuthenticated = async (p: Principal) => {
       principal = p;
       clearTimeout(authTimer);
+      if (p.kind === 'user' && !isStaff(p.role)) {
+        // The event stream is platform-wide: public accounts follow their jobs over REST.
+        socket.close(WS_CLOSE.REVOKED, 'forbidden');
+        return;
+      }
       if (p.kind === 'user') {
         log.info({ userId: p.userId }, 'ws user connected');
         cleanup = ctx.bus.onBroadcast((event: PlatformEvent) => {

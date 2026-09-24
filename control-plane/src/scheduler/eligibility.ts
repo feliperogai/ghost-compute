@@ -1,7 +1,8 @@
 // Hard constraints. A worker that fails any check is never selected, whatever the strategy says.
 import { workloadType } from './catalog.js';
 import type { Capacity, IneligibleReason, JobSpec, Resources, WorkerSnapshot } from './types.js';
-import { estimateSeconds } from './performance.js';
+import { estimateSeconds, usesGpu } from './performance.js';
+import { DEFAULT_OFFER, maxAttemptCost, offerRejects, priceRate } from '../market/offer.js';
 
 export interface EligibilityOptions {
   now: Date;
@@ -87,6 +88,16 @@ export function ineligibility(job: JobSpec, w: WorkerSnapshot, o: EligibilityOpt
   // Measured speed says it cannot finish in time: do not waste an attempt.
   const est = estimateSeconds(job, w);
   if (est !== null && job.timeoutSeconds && est > job.timeoutSeconds) return 'TOO_SLOW';
+
+  // Provider's terms: listing, limits, availability window.
+  const offer = w.offer ?? DEFAULT_OFFER;
+  const refused = offerRejects(offer, job, w.activeAssignments, o.now, job.resources.gpu || usesGpu(job, w));
+  if (refused) return refused;
+  // Customer's terms: the attempt can never cost more than what is left of the budget.
+  if (job.budgetRemaining !== undefined && job.timeoutSeconds) {
+    if (maxAttemptCost(priceRate(offer.price, job.resources), job.timeoutSeconds) > job.budgetRemaining) return 'OVER_BUDGET';
+  }
+  if (job.requirements.minReputation && (w.reputation?.score ?? 0) < job.requirements.minReputation) return 'LOW_REPUTATION';
   return null;
 }
 

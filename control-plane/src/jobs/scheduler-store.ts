@@ -4,13 +4,18 @@ import type { AppContext } from '../context.js';
 import type { JobSpec, Placement, SchedulerMonitors, SchedulerStore, WorkerSnapshot } from '../scheduler/index.js';
 import { JobLifecycle } from './lifecycle.js';
 import { WorkerService } from '../modules/workers/service.js';
+import { normalizeOffer } from '../market/offer.js';
+import { loadReputations, type Reputation } from '../market/reputation.js';
 
 /** A worker that declined or timed out on a job is skipped for this long; failures are permanent per job. */
 const SHORT_EXCLUSION_SECONDS = 60;
+/** Reputation changes slowly; recompute it at most this often. */
+const REPUTATION_TTL_MS = 30_000;
 
 export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
   private readonly lifecycle: JobLifecycle;
   private readonly workersSvc: WorkerService;
+  private reputation: { at: number; map: Map<string, Reputation> } | null = null;
 
   constructor(private readonly ctx: AppContext) {
     this.lifecycle = new JobLifecycle(ctx);
@@ -21,8 +26,15 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
     const ids = await this.ctx.queue.peek(limit);
     if (ids.length === 0) return [];
     const { rows } = await this.ctx.db.query(
-      `SELECT j.id, j.type, j.priority, j.requirements, j.resources, j.created_at, j.timeout_seconds,
+      `SELECT j.id, j.owner_id, j.type, j.priority, j.requirements, j.resources, j.created_at, j.timeout_seconds,
               COALESCE(x.workers, '{}') AS excluded,
+              -- Budget left after attempts already owed to providers (resumable timeouts).
+              j.budget - COALESCE((
+                SELECT sum(LEAST(ceil(p.price_rate * ceil(EXTRACT(EPOCH FROM p.finished_at - p.started_at)) / 60.0),
+                                 ceil(p.price_rate * j.timeout_seconds / 60.0)))
+                  FROM job_assignments p
+                 WHERE p.job_id = j.id AND p.status = 'timeout' AND j.retry_on_timeout
+                   AND p.price_rate IS NOT NULL AND p.started_at IS NOT NULL), 0) AS budget_remaining,
               CASE WHEN j.type = 'image-inference' THEN jsonb_build_object(
                 'items', jsonb_array_length(j.input->'images'),
                 'bytes', (SELECT COALESCE(sum((i->>'size')::bigint), 0) FROM jsonb_array_elements(j.input->'images') i),
@@ -51,6 +63,8 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
       createdAt: r.created_at,
       excludedWorkers: r.excluded,
       timeoutSeconds: r.timeout_seconds,
+      ownerId: r.owner_id,
+      ...(r.budget_remaining !== null ? { budgetRemaining: Number(r.budget_remaining) } : {}),
       ...(r.work ? { work: { items: r.work.items, bytes: Number(r.work.bytes), accelerator: r.work.accelerator } } : {}),
     }));
   }
@@ -59,9 +73,11 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
     const { rows } = await this.ctx.db.query(
       `SELECT w.id, w.name, w.online_since, w.state, w.last_seen_at, w.max_concurrent_tasks, w.workload_types, w.hardware, w.capacity, w.last_usage,
               r.n, r.cpu, r.ram, r.gpu, r.vram, r.disk, h.completed, h.failed,
-              p.profile, p.verified, p.observed
+              p.profile, p.verified, p.observed,
+              o.listed AS offer_listed, o.price AS offer_price, o.availability AS offer_availability, o.limits AS offer_limits
          FROM workers w
          LEFT JOIN worker_performance p ON p.worker_id = w.id
+         LEFT JOIN worker_offers o ON o.worker_id = w.id
          LEFT JOIN LATERAL (
            SELECT count(*)::int AS n,
                   COALESCE(sum((a.reserved->>'cpuCores')::float), 0) AS cpu,
@@ -79,6 +95,7 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
          ) h ON true
         WHERE w.status = 'active' AND w.state <> 'offline'`,
     );
+    const reputation = await this.reputations();
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
@@ -94,7 +111,19 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
       activeAssignments: r.n,
       recent: { completed: r.completed, failed: r.failed },
       performance: toPerformanceView(r.profile, r.verified, r.observed),
+      offer: normalizeOffer(
+        r.offer_price
+          ? { listed: r.offer_listed, price: r.offer_price, availability: r.offer_availability, limits: r.offer_limits }
+          : null,
+      ),
+      ...(reputation.has(r.id) ? { reputation: reputation.get(r.id)! } : {}),
     }));
+  }
+
+  private async reputations() {
+    if (!this.reputation || Date.now() - this.reputation.at > REPUTATION_TTL_MS)
+      this.reputation = { at: Date.now(), map: await loadReputations(this.ctx.db) };
+    return this.reputation.map;
   }
 
   async assign(p: Placement, strategy: string, job: JobSpec): Promise<boolean> {

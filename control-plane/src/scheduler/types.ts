@@ -1,5 +1,7 @@
 // Scheduler domain types. No framework or database imports: this module is the
 // replaceable "brain"; persistence and transport live behind ./ports.ts.
+import type { Offer } from '../market/offer.js';
+import type { Reputation } from '../market/reputation.js';
 
 export const JOB_STATUSES = ['QUEUED', 'ASSIGNED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT'] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -14,6 +16,8 @@ export interface Requirements {
   minRamMb?: number;
   gpuVendor?: 'NVIDIA' | 'AMD' | 'Intel';
   minVramMb?: number;
+  /** Minimum provider reputation (0–1000, objective metrics only). */
+  minReputation?: number;
 }
 
 /** What the job reserves on the worker while it runs. */
@@ -39,6 +43,10 @@ export interface JobSpec {
   timeoutSeconds?: number;
   /** How much work the job carries, when the type knows (for time estimates). */
   work?: WorkSize;
+  /** Customer who submitted it (its own computers never build reputation from it). */
+  ownerId?: string;
+  /** Credits (millicredits) still available for the next attempt; absent = no budget limit. */
+  budgetRemaining?: number;
 }
 
 export interface WorkSize {
@@ -98,6 +106,10 @@ export interface WorkerSnapshot {
   recent: { completed: number; failed: number };
   /** Measured performance; absent/null until the worker is calibrated. */
   performance?: PerformanceView | null;
+  /** Provider's offer (price, availability, limits); absent = default offer. */
+  offer?: Offer;
+  /** Objective reputation; absent = computed from `recent` only. */
+  reputation?: Reputation;
 }
 
 export type IneligibleReason =
@@ -118,7 +130,12 @@ export type IneligibleReason =
   | 'INSUFFICIENT_DISK'
   | 'TOO_HOT'
   | 'NO_SLOTS'
-  | 'EXCLUDED';
+  | 'EXCLUDED'
+  | 'NOT_LISTED'
+  | 'OUTSIDE_AVAILABILITY'
+  | 'PROVIDER_LIMITS'
+  | 'OVER_BUDGET'
+  | 'LOW_REPUTATION';
 
 export interface ScoreTerm {
   /** Normalized to [0, 1]. */

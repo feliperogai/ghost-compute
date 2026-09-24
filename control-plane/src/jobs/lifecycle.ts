@@ -10,7 +10,8 @@ import type { JobStatus, Placement, Resources } from '../scheduler/types.js';
 import { refreshGroupForJob } from '../inference/groups.js';
 import { validateCheckpoint } from '../inference/schemas.js';
 import { CalibrationService } from '../performance/service.js';
-import { earnForAssignment, settleJob } from '../credits/service.js';
+import { settleJob } from '../credits/service.js';
+import { maxAttemptCost, normalizeOffer, priceRate } from '../market/offer.js';
 
 export interface AssignmentOffer {
   assignmentId: string;
@@ -46,6 +47,8 @@ interface JobRow {
   group_id: string | null;
   checkpoint: unknown;
   retry_on_timeout: boolean;
+  /** Millicredits (bigint → string); null for jobs created before budgets. */
+  budget: string | null;
 }
 
 interface AssignmentRow {
@@ -121,12 +124,27 @@ export class JobLifecycle {
       const job = (await c.query<JobRow>(`SELECT * FROM jobs WHERE id = $1 AND status = 'QUEUED' FOR UPDATE`, [p.jobId]))
         .rows[0];
       if (!job) return null;
+      // The provider's price now (not the scheduler's snapshot) is what this attempt costs,
+      // and it must still fit the customer's budget.
+      const o = await c.query(`SELECT listed, price, availability, limits FROM worker_offers WHERE worker_id = $1`, [p.workerId]);
+      const offer = normalizeOffer(o.rows[0] ?? null);
+      if (!offer.listed) return null;
+      const rate = priceRate(offer.price, reserved);
+      if (job.budget !== null) {
+        const spent = await c.query<{ s: string }>(
+          `SELECT COALESCE(sum(LEAST(ceil(price_rate * ceil(EXTRACT(EPOCH FROM finished_at - started_at)) / 60.0),
+                                     ceil(price_rate * $2 / 60.0))), 0)::text AS s
+             FROM job_assignments WHERE job_id = $1 AND status = 'timeout' AND $3 AND price_rate IS NOT NULL AND started_at IS NOT NULL`,
+          [job.id, job.timeout_seconds, job.retry_on_timeout],
+        );
+        if (maxAttemptCost(rate, job.timeout_seconds) > Number(job.budget) - Number(spent.rows[0]!.s)) return null;
+      }
       const a = await c.query<{ id: string; attempt: number; accept_deadline: Date }>(
-        `INSERT INTO job_assignments (job_id, worker_id, attempt, strategy, score, score_detail, reserved, accept_deadline)
+        `INSERT INTO job_assignments (job_id, worker_id, attempt, strategy, score, score_detail, reserved, accept_deadline, price_rate)
          VALUES ($1, $2, (SELECT count(*) + 1 FROM job_assignments WHERE job_id = $1), $3, $4, $5, $6,
-                 now() + make_interval(secs => $7))
+                 now() + make_interval(secs => $7), $8)
          RETURNING id, attempt, accept_deadline`,
-        [job.id, p.workerId, strategy, p.score.total, p.score, reserved, acceptSecs],
+        [job.id, p.workerId, strategy, p.score.total, p.score, reserved, acceptSecs, rate],
       );
       const row = a.rows[0]!;
       await c.query(
@@ -262,7 +280,6 @@ export class JobLifecycle {
       );
       await event(c, job.id, a.id, workerId, 'job.completed', { attempt: a.attempt, outputSha256: actual });
       // Credits move in the same transaction as the state change: all or nothing.
-      await earnForAssignment(c, a.id);
       await settleJob(c, job.id);
       return {
         jobId: job.id,
@@ -456,8 +473,6 @@ export class JobLifecycle {
   /** Ends an attempt and applies the retry policy. Caller holds job + assignment locks. */
   private async endAttempt(c: pg.PoolClient, job: JobRow, a: AssignmentRow, o: AttemptOutcome, error: string): Promise<After> {
     await c.query(`UPDATE job_assignments SET status = $2, finished_at = now(), error = $3 WHERE id = $1`, [a.id, o.kind, error]);
-    // A resumable attempt that timed out keeps its checkpoint: that work is paid for.
-    if (o.kind === 'timeout' && job.retry_on_timeout && a.started_at) await earnForAssignment(c, a.id);
     const failures = job.failures + (countsAsFailure(o.kind) ? 1 : 0);
     const decision = this.policy.decide(o, failures, job.max_attempts);
     const base = { jobId: job.id, workerId: a.worker_id, assignmentId: a.id };

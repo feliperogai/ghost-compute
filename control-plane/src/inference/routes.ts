@@ -28,20 +28,20 @@ export const inferenceRoutes =
 
     app.post(
       '/v1/datasets',
-      { onRequest: requireUser(ctx, 'operator'), schema: { body: createDatasetSchema } },
+      { onRequest: requireUser(ctx, 'member'), schema: { body: createDatasetSchema } },
       async (req, reply) => reply.status(201).send(await datasets.create(req.body.name, actor(req).userId)),
     );
 
-    app.get('/v1/datasets', { onRequest: requireUser(ctx, 'viewer') }, async (req) => datasets.list(actor(req).userId));
+    app.get('/v1/datasets', { onRequest: requireUser(ctx, 'member') }, async (req) => datasets.list(actor(req).userId));
 
-    app.get('/v1/datasets/:id', { onRequest: requireUser(ctx, 'viewer'), schema: { params: uuidParam } }, async (req) =>
+    app.get('/v1/datasets/:id', { onRequest: requireUser(ctx, 'member'), schema: { params: uuidParam } }, async (req) =>
       datasets.get(req.params.id, actor(req)),
     );
 
     app.post(
       '/v1/datasets/:id/images',
       {
-        onRequest: requireUser(ctx, 'operator'),
+        onRequest: requireUser(ctx, 'member'),
         bodyLimit: MAX_IMAGE_BYTES,
         schema: {
           params: uuidParam,
@@ -58,32 +58,32 @@ export const inferenceRoutes =
 
     app.post(
       '/v1/datasets/:id/seal',
-      { onRequest: requireUser(ctx, 'operator'), schema: { params: uuidParam } },
+      { onRequest: requireUser(ctx, 'member'), schema: { params: uuidParam } },
       async (req) => datasets.seal(req.params.id, actor(req)),
     );
 
     app.post(
       '/v1/inference',
-      { onRequest: requireUser(ctx, 'operator'), schema: { body: createInferenceSchema } },
+      { onRequest: requireUser(ctx, 'member'), schema: { body: createInferenceSchema } },
       async (req, reply) => reply.status(201).send(await runs.create(req.body, actor(req))),
     );
 
-    app.get('/v1/inference', { onRequest: requireUser(ctx, 'viewer') }, async (req) => runs.list(actor(req).userId));
+    app.get('/v1/inference', { onRequest: requireUser(ctx, 'member') }, async (req) => runs.list(actor(req).userId));
 
-    app.get('/v1/inference/:id', { onRequest: requireUser(ctx, 'viewer'), schema: { params: uuidParam } }, async (req) =>
+    app.get('/v1/inference/:id', { onRequest: requireUser(ctx, 'member'), schema: { params: uuidParam } }, async (req) =>
       runs.get(req.params.id, actor(req)),
     );
 
     app.get(
       '/v1/inference/:id/result',
-      { onRequest: requireUser(ctx, 'viewer'), schema: { params: uuidParam } },
+      { onRequest: requireUser(ctx, 'member'), schema: { params: uuidParam } },
       async (req) => runs.result(req.params.id, actor(req)),
     );
 
     app.post(
       '/v1/inference/:id/cancel',
       {
-        onRequest: requireUser(ctx, 'operator'),
+        onRequest: requireUser(ctx, 'member'),
         schema: {
           params: uuidParam,
           body: optionalBody(z.object({ reason: z.string().trim().min(1).max(500).default('cancelled by owner') })),

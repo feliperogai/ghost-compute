@@ -224,7 +224,9 @@ export class WorkerService {
     );
     const t = totals.rows[0]!;
     const wallet = await new CreditService(this.ctx).workerWalletView(workerId);
-    const earned = (wallet.totals as Record<string, { in: { credits: number } }>).earning?.in.credits ?? 0;
+    const t2 = wallet.totals as Record<string, { in: { milli: number } }>;
+    // Payments from customers (settlements) plus any legacy network earnings.
+    const earned = ((t2.settlement?.in.milli ?? 0) + (t2.earning?.in.milli ?? 0)) / 1000;
     return {
       tasks: { succeeded: t.completed, failed: t.failed, preempted: t.interrupted, active: t.active },
       computeSeconds: Math.round(t.seconds),

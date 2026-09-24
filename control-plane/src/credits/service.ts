@@ -1,5 +1,5 @@
-// Business rules on top of the ledger: grants, job holds and settlement, worker
-// earnings, withdrawals to the worker's owner, and read models (all derived).
+// Business rules on top of the ledger: grants, job budgets and settlement (customers
+// pay providers their price), withdrawals to the worker's owner, and read models (all derived).
 import type pg from 'pg';
 import type { AppContext } from '../context.js';
 import { withTx } from '../db/pool.js';
@@ -7,11 +7,12 @@ import { audit } from '../audit.js';
 import { conflict, forbidden, notFound } from '../errors.js';
 import type { Resources } from '../scheduler/types.js';
 import { GENESIS_HASH, Ledger, insufficientCredits, txHash, withEntries, type LedgerTx } from './ledger.js';
-import { attemptCharge, computeEarning, holdAmount, MILLI, ratePerMinute, toCredits } from './pricing.js';
+import { attemptCharge, holdAmount, MILLI, ratePerMinute, toCredits } from './pricing.js';
+import { maxAttemptCost } from '../market/offer.js';
 
 export interface CreditActor {
   userId: string;
-  role: 'admin' | 'operator' | 'viewer';
+  role: 'admin' | 'operator' | 'viewer' | 'member';
 }
 
 const credits = (milli: number) => ({ milli, credits: toCredits(milli) });
@@ -24,9 +25,9 @@ function replay(existing: LedgerTx, same: (t: LedgerTx) => boolean) {
 
 // ---- in-transaction hooks (called by jobs / users code, inside their own transaction) ----
 
-/** Welcome grant for a new user (config CREDITS_INITIAL_GRANT). */
-export async function grantSignup(ctx: AppContext, c: pg.PoolClient, userId: string) {
-  const amount = ctx.config.CREDITS_INITIAL_GRANT * MILLI;
+/** Welcome grant for a new user, in credits. */
+export async function grantSignup(c: pg.PoolClient, userId: string, grantCredits: number) {
+  const amount = Math.round(grantCredits * MILLI);
   const ledger = new Ledger(c);
   const wallet = await ledger.userWallet(userId);
   if (amount <= 0) return;
@@ -47,13 +48,17 @@ export async function grantSignup(ctx: AppContext, c: pg.PoolClient, userId: str
 
 export interface HoldRequest {
   jobId: string;
-  resources: Resources;
-  timeoutSeconds: number;
+  /** Millicredits: the customer's budget for the job. */
+  amount: number;
+  detail: Record<string, unknown>;
 }
 
+/** Default budget when the customer sets none: the standard price × timeout. */
+export const defaultBudget = (resources: Resources, timeoutSeconds: number) => holdAmount(resources, timeoutSeconds);
+
 /**
- * Reserves the maximum cost of each job (rate × timeout) from the owner's wallet into
- * escrow. All or nothing: not enough credits for every job → nothing is created.
+ * Moves each job's budget from the customer's wallet into escrow. All or nothing: not
+ * enough credits for every job → nothing is created.
  */
 export async function holdForJobs(c: pg.PoolClient, ownerId: string, jobs: HoldRequest[]) {
   if (jobs.length === 0) return;
@@ -61,97 +66,35 @@ export async function holdForJobs(c: pg.PoolClient, ownerId: string, jobs: HoldR
   await ledger.lock();
   const wallet = await ledger.userWallet(ownerId);
   const escrow = await ledger.systemWallet('escrow');
-  const amounts = jobs.map((j) => holdAmount(j.resources, j.timeoutSeconds));
-  const total = amounts.reduce((s, a) => s + a, 0);
+  const total = jobs.reduce((s, j) => s + j.amount, 0);
   const available = await ledger.balance(wallet);
   if (total > available) throw insufficientCredits(total, available);
   await ledger.post(
-    jobs.map((j, i) => ({
+    jobs.map((j) => ({
       kind: 'hold' as const,
       idempotencyKey: `hold:job:${j.jobId}`,
       jobId: j.jobId,
       entries: [
-        { walletId: wallet, amount: -amounts[i]! },
-        { walletId: escrow, amount: amounts[i]! },
+        { walletId: wallet, amount: -j.amount },
+        { walletId: escrow, amount: j.amount },
       ],
       actorType: 'user' as const,
       actorId: ownerId,
-      memo: 'Reserva para execução do job',
-      detail: {
-        ratePerMinute: ratePerMinute(j.resources),
-        timeoutSeconds: j.timeoutSeconds,
-        resources: j.resources,
-        formula: 'ceil(ratePerMinute × timeoutSeconds / 60)',
-      },
+      memo: 'Orçamento reservado para o job',
+      detail: j.detail,
     })),
   );
 }
 
-/**
- * Pays the worker for a productive attempt (completed, or a resumable attempt that
- * timed out with its checkpoint kept). Caller has just set finished_at.
- */
-export async function earnForAssignment(c: pg.PoolClient, assignmentId: string) {
-  const { rows } = await c.query<{
-    worker_id: string;
-    job_id: string;
-    name: string;
-    seconds: number | null;
-    reserved: Resources;
-    profile: { scores?: { cpu?: number; gpu?: number } } | null;
-    verified: boolean | null;
-    online_minutes: number;
-  }>(
-    `SELECT a.worker_id, a.job_id, w.name, a.reserved,
-            EXTRACT(EPOCH FROM (a.finished_at - a.started_at))::float8 AS seconds,
-            p.profile, p.verified,
-            (SELECT count(*)::int FROM worker_metrics m
-              WHERE m.worker_id = a.worker_id AND m.ts > now() - interval '24 hours'
-                AND m.state IN ('available', 'running')) AS online_minutes
-       FROM job_assignments a
-       JOIN workers w ON w.id = a.worker_id
-       LEFT JOIN worker_performance p ON p.worker_id = a.worker_id
-      WHERE a.id = $1`,
-    [assignmentId],
-  );
-  const r = rows[0];
-  if (!r || r.seconds === null) return null;
-  const score = (r.reserved.gpu ? r.profile?.scores?.gpu : r.profile?.scores?.cpu) ?? null;
-  const e = computeEarning({
-    workerName: r.name,
-    seconds: r.seconds,
-    resources: r.reserved,
-    performance: { verified: r.verified === true, score },
-    onlineMinutes: r.online_minutes,
-  });
-  if (e.amount <= 0) return null;
-  const ledger = new Ledger(c);
-  await ledger.lock();
-  const key = `earning:assignment:${assignmentId}`;
-  if (await ledger.findByKey(key)) return null;
-  const [tx] = await ledger.post([
-    {
-      kind: 'earning',
-      idempotencyKey: key,
-      jobId: r.job_id,
-      assignmentId,
-      workerId: r.worker_id,
-      entries: [
-        { walletId: await ledger.systemWallet('issuance'), amount: -e.amount },
-        { walletId: await ledger.workerWallet(r.worker_id), amount: e.amount },
-      ],
-      actorType: 'system',
-      memo: e.detail.summary,
-      detail: e.detail,
-    },
-  ]);
-  return tx!;
-}
+const fmtCredits = (milli: number) => toCredits(milli).toLocaleString('pt-BR', { maximumFractionDigits: 3 });
 
 /**
- * Closes a job's hold when it reaches a terminal state. COMPLETED: the owner pays the
- * compute time of its productive attempts (per second, capped at the hold); anything
- * else: full refund. Runs once per job (idempotency key).
+ * Closes a job's escrow when it reaches a terminal state, in one transaction:
+ *   COMPLETED → each provider is paid its own price × the seconds its productive attempts
+ *               ran (completed, or resumable timeouts whose checkpoint was kept), each
+ *               attempt capped at price × timeout; the rest goes back to the customer.
+ *   otherwise → full refund.
+ * The total paid never exceeds the budget held. Runs once per job (idempotency key).
  */
 export async function settleJob(c: pg.PoolClient, jobId: string) {
   const ledger = new Ledger(c);
@@ -171,60 +114,76 @@ export async function settleJob(c: pg.PoolClient, jobId: string) {
   );
   if (held <= 0) return null; // no hold (job created before credits existed)
   const job = (
-    await c.query<{ owner_id: string; status: string; resources: Resources; retry_on_timeout: boolean }>(
-      `SELECT owner_id, status, resources, retry_on_timeout FROM jobs WHERE id = $1`,
+    await c.query<{ owner_id: string; status: string; resources: Resources; retry_on_timeout: boolean; timeout_seconds: number }>(
+      `SELECT owner_id, status, resources, retry_on_timeout, timeout_seconds FROM jobs WHERE id = $1`,
       [jobId],
     )
   ).rows[0];
   if (!job) return null;
-  const rate = ratePerMinute(job.resources);
   const attempts =
     job.status === 'COMPLETED'
       ? (
-          await c.query<{ id: string; status: string; seconds: number }>(
-            `SELECT id, status, EXTRACT(EPOCH FROM (finished_at - started_at))::float8 AS seconds
-               FROM job_assignments
-              WHERE job_id = $1 AND started_at IS NOT NULL AND finished_at IS NOT NULL
-                AND (status = 'completed' OR (status = 'timeout' AND $2))
-              ORDER BY attempt`,
+          await c.query<{ id: string; status: string; seconds: number; worker_id: string; name: string; price_rate: number | null; reserved: Resources }>(
+            `SELECT a.id, a.status, a.worker_id, w.name, a.price_rate, a.reserved,
+                    EXTRACT(EPOCH FROM (a.finished_at - a.started_at))::float8 AS seconds
+               FROM job_assignments a JOIN workers w ON w.id = a.worker_id
+              WHERE a.job_id = $1 AND a.started_at IS NOT NULL AND a.finished_at IS NOT NULL
+                AND (a.status = 'completed' OR (a.status = 'timeout' AND $2))
+              ORDER BY a.attempt`,
             [jobId, job.retry_on_timeout],
           )
         ).rows
       : [];
-  const billed = attempts.map((a) => ({
-    assignmentId: a.id,
-    status: a.status,
-    seconds: Math.round(a.seconds * 1000) / 1000,
-    charge: attemptCharge(rate, a.seconds),
-  }));
-  const raw = billed.reduce((s, a) => s + a.charge, 0);
-  const cost = Math.min(raw, held);
-  const refund = held - cost;
-  const user = await ledger.userWallet(job.owner_id);
+  let left = held;
+  const paid = attempts.map((a) => {
+    // Attempts assigned before provider prices existed are paid at the standard rate.
+    const rate = a.price_rate ?? ratePerMinute(a.reserved ?? job.resources);
+    const due = Math.min(attemptCharge(rate, a.seconds), maxAttemptCost(rate, job.timeout_seconds));
+    const charge = Math.min(due, left);
+    left -= charge;
+    const seconds = Math.round(a.seconds * 1000) / 1000;
+    return {
+      assignmentId: a.id,
+      workerId: a.worker_id,
+      status: a.status,
+      seconds,
+      ratePerMinute: rate,
+      charge,
+      summary:
+        `Worker ${a.name} recebeu ${fmtCredits(charge)} créditos: ` +
+        `${(seconds / 60).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} min × ` +
+        `${fmtCredits(rate)} créditos/min (preço do provedor para os recursos reservados)` +
+        (charge < due ? `, limitado pelo orçamento` : '') +
+        '.',
+    };
+  });
+  const cost = held - left;
+  const refund = left;
+  const perWorker = new Map<string, number>();
+  for (const p of paid) if (p.charge > 0) perWorker.set(p.workerId, (perWorker.get(p.workerId) ?? 0) + p.charge);
   const entries = [{ walletId: escrow, amount: -held }];
-  if (cost > 0) entries.push({ walletId: await ledger.systemWallet('consumption'), amount: cost });
-  if (refund > 0) entries.push({ walletId: user, amount: refund });
+  for (const [workerId, amount] of perWorker) entries.push({ walletId: await ledger.workerWallet(workerId), amount });
+  if (refund > 0) entries.push({ walletId: await ledger.userWallet(job.owner_id), amount: refund });
   const memo =
     job.status === 'COMPLETED'
-      ? `Job concluído: ${toCredits(cost)} créditos cobrados, ${toCredits(refund)} devolvidos`
-      : `Job ${job.status}: reserva de ${toCredits(held)} créditos devolvida`;
+      ? `Job concluído: ${fmtCredits(cost)} créditos pagos ao(s) provedor(es), ${fmtCredits(refund)} devolvidos`
+      : `Job ${job.status}: orçamento de ${fmtCredits(held)} créditos devolvido`;
   const [tx] = await ledger.post([
     {
       kind: 'settlement',
       idempotencyKey: key,
       jobId,
+      workerId: perWorker.size === 1 ? [...perWorker.keys()][0]! : null,
       entries,
       actorType: 'system',
       memo,
       detail: {
         jobStatus: job.status,
-        ratePerMinute: rate,
         held,
         charged: cost,
         refunded: refund,
-        cappedAtHold: raw > held,
-        attempts: billed,
-        formula: 'Σ ceil(ratePerMinute × ceil(seconds) / 60) over productive attempts, ≤ held',
+        attempts: paid,
+        formula: 'per productive attempt: min(ceil(ratePerMinute × ceil(seconds) / 60), ceil(ratePerMinute × timeout / 60)); Σ ≤ held',
       },
     },
   ]);
@@ -438,49 +397,48 @@ export class CreditService {
     return this.transactions(w?.id ?? null, f);
   }
 
-  /** Earnings of the caller's workers (admins: any worker), with the calculation of each. */
+  /**
+   * What the caller's computers were paid (admins: any computer): one row per job and
+   * worker, with the attempts, seconds and price behind the amount.
+   */
   async earnings(actor: CreditActor, f: { workerId?: string | undefined; limit: number; beforeSeq?: number | undefined }) {
     if (f.workerId) await this.assertWorkerVisible(actor, f.workerId);
     const scope = actor.role === 'admin' ? null : actor.userId;
+    const base = `FROM credit_entries e
+         JOIN credit_wallets cw ON cw.id = e.wallet_id AND cw.kind = 'worker'
+         JOIN credit_transactions t ON t.id = e.transaction_id AND t.kind IN ('settlement', 'earning')
+         JOIN workers w ON w.id = cw.worker_id
+        WHERE e.amount > 0 AND ($1::uuid IS NULL OR w.owner_user_id = $1) AND ($2::uuid IS NULL OR w.id = $2)`;
     const { rows } = await this.ctx.db.query(
-      `SELECT t.seq, t.id, t.job_id, t.assignment_id, t.worker_id, w.name AS worker_name, t.memo, t.detail, t.created_at,
+      `SELECT t.seq, t.id, t.kind, t.job_id, t.detail, t.memo, t.created_at, w.id AS worker_id, w.name AS worker_name,
               e.amount::text AS amount
-         FROM credit_transactions t
-         JOIN credit_entries e ON e.transaction_id = t.id
-         JOIN credit_wallets cw ON cw.id = e.wallet_id AND cw.worker_id = t.worker_id
-         JOIN workers w ON w.id = t.worker_id
-        WHERE t.kind = 'earning'
-          AND ($1::uuid IS NULL OR w.owner_user_id = $1)
-          AND ($2::uuid IS NULL OR t.worker_id = $2)
-          AND ($3::bigint IS NULL OR t.seq < $3)
-        ORDER BY t.seq DESC LIMIT $4`,
+         ${base} AND ($3::bigint IS NULL OR t.seq < $3)
+        ORDER BY t.seq DESC, w.id LIMIT $4`,
       [scope, f.workerId ?? null, f.beforeSeq ?? null, f.limit + 1],
     );
     const totals = await this.ctx.db.query<{ worker_id: string; name: string; n: number; total: string }>(
-      `SELECT t.worker_id, w.name, count(*)::int AS n, sum(e.amount)::text AS total
-         FROM credit_transactions t
-         JOIN credit_entries e ON e.transaction_id = t.id
-         JOIN credit_wallets cw ON cw.id = e.wallet_id AND cw.worker_id = t.worker_id
-         JOIN workers w ON w.id = t.worker_id
-        WHERE t.kind = 'earning' AND ($1::uuid IS NULL OR w.owner_user_id = $1) AND ($2::uuid IS NULL OR t.worker_id = $2)
-        GROUP BY t.worker_id, w.name ORDER BY w.name`,
+      `SELECT w.id AS worker_id, w.name, count(*)::int AS n, sum(e.amount)::text AS total ${base}
+        GROUP BY w.id, w.name ORDER BY w.name`,
       [scope, f.workerId ?? null],
     );
     const page = rows.slice(0, f.limit);
     return {
-      byWorker: totals.rows.map((r) => ({ workerId: r.worker_id, name: r.name, earnings: r.n, total: credits(Number(r.total)) })),
-      items: page.map((r) => ({
-        seq: Number(r.seq),
-        id: r.id,
-        workerId: r.worker_id,
-        workerName: r.worker_name,
-        jobId: r.job_id,
-        assignmentId: r.assignment_id,
-        amount: credits(Number(r.amount)),
-        summary: r.memo,
-        calculation: r.detail,
-        createdAt: r.created_at.toISOString(),
-      })),
+      byWorker: totals.rows.map((r) => ({ workerId: r.worker_id, name: r.name, payments: r.n, total: credits(Number(r.total)) })),
+      items: page.map((r) => {
+        const attempts = ((r.detail?.attempts ?? []) as { workerId?: string; summary?: string }[]).filter((a) => a.workerId === r.worker_id);
+        return {
+          seq: Number(r.seq),
+          id: r.id,
+          kind: r.kind,
+          workerId: r.worker_id,
+          workerName: r.worker_name,
+          jobId: r.job_id,
+          amount: credits(Number(r.amount)),
+          summary: r.kind === 'settlement' ? attempts.map((a) => a.summary).join(' ') : r.memo,
+          attempts: r.kind === 'settlement' ? attempts : [],
+          createdAt: r.created_at.toISOString(),
+        };
+      }),
       nextCursor: rows.length > f.limit ? String(page[page.length - 1]!.seq) : null,
     };
   }
@@ -489,7 +447,6 @@ export class CreditService {
   async spending(userId: string, f: { limit: number; beforeSeq?: number | undefined }) {
     const { rows } = await this.ctx.db.query(
       `SELECT h.seq, h.job_id, j.name, j.type, j.status, h.created_at AS held_at,
-              (h.detail->>'ratePerMinute')::int AS rate,
               he.amount::text AS held, s.id AS settlement_id, s.detail AS settlement, s.created_at AS settled_at
          FROM credit_transactions h
          JOIN credit_entries he ON he.transaction_id = h.id AND he.amount > 0
@@ -511,17 +468,16 @@ export class CreditService {
     );
     const page = rows.slice(0, f.limit);
     return {
-      totals: { charged: credits(Number(totals.rows[0]!.charged)), held: credits(Number(totals.rows[0]!.held)) },
+      totals: { paid: credits(Number(totals.rows[0]!.charged)), held: credits(Number(totals.rows[0]!.held)) },
       items: page.map((r) => ({
         seq: Number(r.seq),
         jobId: r.job_id,
         jobName: r.name,
         type: r.type,
         jobStatus: r.status,
-        ratePerMinute: credits(r.rate),
-        held: credits(Number(r.held)),
+        budget: credits(Number(r.held)),
         state: r.settlement_id ? 'settled' : 'held',
-        charged: r.settlement ? credits(Number(r.settlement.charged)) : null,
+        paid: r.settlement ? credits(Number(r.settlement.charged)) : null,
         refunded: r.settlement ? credits(Number(r.settlement.refunded)) : null,
         attempts: r.settlement?.attempts ?? [],
         heldAt: r.held_at.toISOString(),
