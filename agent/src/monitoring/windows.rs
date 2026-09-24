@@ -132,6 +132,14 @@ pub fn on_battery() -> Option<bool> {
     }
 }
 
+/// Whether this process runs in session 0 (Windows services).
+pub fn in_service_session() -> bool {
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    let mut session = u32::MAX;
+    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) }.is_ok() && session == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,12 +160,4 @@ mod tests {
         let _ = user_idle_secs();
         let _ = on_battery();
     }
-}
-
-/// Whether this process runs in session 0 (Windows services).
-pub fn in_service_session() -> bool {
-    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-    use windows::Win32::System::Threading::GetCurrentProcessId;
-    let mut session = u32::MAX;
-    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) }.is_ok() && session == 0
 }
