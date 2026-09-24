@@ -68,6 +68,14 @@ const envSchema = z.object({
   MEMBER_STORAGE_BYTES: z.coerce.number().int().min(1).default(2 * 1024 * 1024 * 1024),
   /** Per public account: datasets. */
   MEMBER_MAX_DATASETS: z.coerce.number().int().min(1).max(100_000).default(50),
+  /**
+   * Verified jobs need a replica from a trusted computer (owned by staff: admin/operator),
+   * whose result decides. Defeats colluding providers; needs trusted capacity online.
+   */
+  REQUIRE_TRUSTED_REPLICA: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   MAX_BODY_BYTES: z.coerce.number().int().min(1024).default(1_048_576),
 });
 

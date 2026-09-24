@@ -1,7 +1,8 @@
 //! TLS policy: rustls (no OpenSSL), TLS 1.2+ only, optional CA pinning.
 
-use std::{io::BufReader, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use rustls::{ClientConfig, RootCertStore};
 
 #[derive(Debug, thiserror::Error)]
@@ -22,10 +23,12 @@ pub fn client_config(pinned_ca: Option<&Path>) -> Result<ClientConfig, TlsError>
     match pinned_ca {
         Some(path) => {
             let shown = path.display().to_string();
-            let file = std::fs::File::open(path).map_err(|e| TlsError::Read(shown.clone(), e))?;
-            let certs = rustls_pemfile::certs(&mut BufReader::new(file))
+            // PEM parsing from rustls' own pki-types (the old rustls-pemfile is unmaintained).
+            std::fs::metadata(path).map_err(|e| TlsError::Read(shown.clone(), e))?;
+            let certs = CertificateDer::pem_file_iter(path)
+                .map_err(|e| TlsError::Read(shown.clone(), std::io::Error::other(e.to_string())))?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| TlsError::Read(shown.clone(), e))?;
+                .map_err(|e| TlsError::Read(shown.clone(), std::io::Error::other(e.to_string())))?;
             if certs.is_empty() {
                 return Err(TlsError::Empty(shown));
             }

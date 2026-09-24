@@ -312,14 +312,16 @@ export class JobLifecycle {
    * MAX_REPLICAS, after which the job fails with RESULT_MISMATCH and nobody is paid.
    */
   private async verifyReplicas(c: pg.PoolClient, job: JobRow, a: AssignmentRow, sha: string): Promise<After> {
-    const { rows } = await c.query<{ id: string; owner_user_id: string | null; output: unknown }>(
-      `SELECT x.id, w.owner_user_id, x.output FROM job_assignments x JOIN workers w ON w.id = x.worker_id
+    const { rows } = await c.query<{ id: string; owner_user_id: string | null; output: unknown; trusted: boolean | null }>(
+      `SELECT x.id, w.owner_user_id, x.output, u.role IN ('admin', 'operator') AS trusted
+         FROM job_assignments x JOIN workers w ON w.id = x.worker_id LEFT JOIN users u ON u.id = w.owner_user_id
         WHERE x.job_id = $1 AND x.status = 'completed' ORDER BY x.attempt`,
       [job.id],
     );
     const v = verdict(
       job.type,
-      rows.map((r) => ({ assignmentId: r.id, ownerId: r.owner_user_id, output: r.output })),
+      rows.map((r) => ({ assignmentId: r.id, ownerId: r.owner_user_id, output: r.output, trusted: r.trusted === true })),
+      this.ctx.config.REQUIRE_TRUSTED_REPLICA,
     );
     const base = { jobId: job.id, workerId: a.worker_id, assignmentId: a.id };
     if (v.kind === 'agreed') {

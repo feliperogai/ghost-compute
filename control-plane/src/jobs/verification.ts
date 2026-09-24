@@ -63,6 +63,8 @@ export interface Replica {
   assignmentId: string;
   ownerId: string | null;
   output: unknown;
+  /** Staff-owned computer: its answer decides. */
+  trusted?: boolean;
 }
 
 export type Verdict =
@@ -75,7 +77,15 @@ export type Verdict =
  * Looks for AGREEMENT replicas, from distinct owners, with the same answer. The earliest
  * replica of the largest agreeing group wins (deterministic given the order).
  */
-export function verdict(type: string, replicas: Replica[]): Verdict {
+export function verdict(type: string, replicas: Replica[], requireTrusted = false): Verdict {
+  // A trusted replica decides: whoever agrees with it is right, everyone else is not.
+  const judge = replicas.find((r) => r.trusted);
+  if (judge) {
+    const agreed = replicas.filter((r) => r === judge || resultsAgree(type, judge.output, r.output)).map((r) => r.assignmentId);
+    const set = new Set(agreed);
+    return { kind: 'agreed', winner: judge.assignmentId, agreed, disagreed: replicas.filter((r) => !set.has(r.assignmentId)).map((r) => r.assignmentId) };
+  }
+  if (requireTrusted) return { kind: 'pending' };
   let best: Replica[] = [];
   for (const r of replicas) {
     const group = replicas.filter((o) => o === r || resultsAgree(type, r.output, o.output));

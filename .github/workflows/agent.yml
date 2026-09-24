@@ -6,6 +6,10 @@ on:
   pull_request:
     paths: ["agent/**", "ipc/**", "workloads/**", ".github/workflows/agent.yml"]
 
+# Least privilege for the workflow token (read the code, nothing else).
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:

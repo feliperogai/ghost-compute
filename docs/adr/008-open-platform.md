@@ -105,9 +105,9 @@ Por que isso não é manipulável:
 
 ## Limites conhecidos (não resolvidos aqui)
 
-- **Resultado errado com hash coerente.** O hash só prova que o resultado não mudou no caminho, não que está certo. Os workloads são determinísticos, então o próximo passo natural é verificação por redundância: executar parte dos jobs em dois provedores e comparar. Até lá, um provedor mal-intencionado pode devolver lixo. A reputação só pega quem falha, não quem mente.
+- **Resultado errado com hash coerente:** resolvido pela verificação por réplica, descrita em [docs/security/AUDIT.md](../security/AUDIT.md) §3.
 - **Várias contas do mesmo provedor** ainda podem simular clientes e inflar a reputação. O cadastro limitado por IP e o crédito inicial pequeno só encarecem isso.
 - **Privacidade dos inputs.** O provedor vê o input dos jobs que executa. Clientes não devem enviar dados sensíveis.
-- **Um cliente pode desistir perto do fim.** Cancelar um job em execução devolve o orçamento inteiro, e o provedor não recebe.
+- **Cliente que desiste perto do fim:** resolvido. O cancelamento paga ao provedor o tempo trabalhado (auditoria §4).
 - **GPU em modo `auto`** não é cobrada, porque o preço usa os recursos reservados. O provedor que não quer ceder a GPU usa `allowGpu: false`, e isso também bloqueia jobs `auto` em máquinas com GPU.
 - **WebSocket só para a equipe.** O stream é global; membros acompanham por REST.

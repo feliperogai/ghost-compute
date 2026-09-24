@@ -1,0 +1,53 @@
+name: security
+
+# Dependency advisories for every lockfile, on every change and weekly (new advisories
+# appear for code that did not change).
+on:
+  push:
+    paths: ["**/Cargo.lock", "**/package-lock.json", ".github/workflows/security.yml"]
+  pull_request:
+    paths: ["**/Cargo.lock", "**/package-lock.json", ".github/workflows/security.yml"]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cargo-audit
+      - run: cargo install cargo-audit --locked
+      - name: Audit every Rust lockfile
+        run: |
+          set -e
+          for lock in agent/Cargo.lock ipc/Cargo.lock desktop/src-tauri/Cargo.lock workloads/benchmark/Cargo.lock workloads/image-inference/Cargo.lock; do
+            echo "::group::$lock"
+            # Fails on any known vulnerability; unmaintained/yanked notices are reported, not fatal.
+            cargo audit --file "$lock"
+            echo "::endgroup::"
+          done
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [control-plane, dashboard, desktop]
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm audit --audit-level=high
+      # Lockfile must match package.json exactly (no silent resolution at install time).
+      - run: npm ci --ignore-scripts --dry-run

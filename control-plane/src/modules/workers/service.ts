@@ -248,9 +248,9 @@ export class WorkerService {
     };
   }
 
-  async heartbeat(workerId: string, hb: HeartbeatInput) {
+  async heartbeat(workerId: string, hb: HeartbeatInput, ip: string | null = null) {
     const { rows } = await this.ctx.db.query<{ prev_state: string; state: string }>(
-      `UPDATE workers w SET state = $2, last_usage = $3, last_seen_at = now(),
+      `UPDATE workers w SET state = $2, last_usage = $3, last_seen_at = now(), last_ip = COALESCE($7, w.last_ip),
               online_since = CASE WHEN p.prev_state = 'offline' OR w.online_since IS NULL THEN now() ELSE w.online_since END,
               agent_version = COALESCE($4, w.agent_version),
               capacity = COALESCE($5, w.capacity),
@@ -258,7 +258,7 @@ export class WorkerService {
          FROM (SELECT state AS prev_state FROM workers WHERE id = $1 FOR UPDATE) p
         WHERE w.id = $1 AND w.status = 'active'
         RETURNING p.prev_state, w.state`,
-      [workerId, hb.state, hb.usage, hb.agentVersion ?? null, hb.capacity ?? null, hb.workloadTypes ?? null],
+      [workerId, hb.state, hb.usage, hb.agentVersion ?? null, hb.capacity ?? null, hb.workloadTypes ?? null, ip],
     );
     const row = rows[0];
     if (!row) throw new AppError(403, 'WORKER_REVOKED', 'Worker has been revoked');

@@ -186,6 +186,7 @@ const REASON_PT: Record<IneligibleReason, string> = {
   PROVIDER_LIMITS: 'fora dos limites do provedor',
   OVER_BUDGET: 'preço acima do orçamento',
   LOW_REPUTATION: 'reputação abaixo do mínimo',
+  UNTRUSTED_VERIFIER: 'verificação exige computador confiável',
 };
 
 const fmt = (v: number, d = 2) => v.toFixed(d).replace('.', ',');

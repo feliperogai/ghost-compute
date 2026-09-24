@@ -68,7 +68,7 @@ export const workerRoutes =
           }),
         },
       },
-      async (req) => svc.heartbeat(workerId(req), req.body),
+      async (req) => svc.heartbeat(workerId(req), req.body, req.ip),
     );
 
     app.get('/v1/worker/me', { onRequest: requireWorker(ctx) }, async (req) => svc.get(workerId(req)));
