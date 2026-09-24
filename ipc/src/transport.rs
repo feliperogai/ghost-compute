@@ -162,8 +162,9 @@ pub fn running_under_wine() -> bool {
 pub struct Listener {
     #[cfg(windows)]
     name: String,
+    /// The instance the next client will connect to (None: create it on the next accept).
     #[cfg(windows)]
-    next: tokio::net::windows::named_pipe::NamedPipeServer,
+    next: Option<tokio::net::windows::named_pipe::NamedPipeServer>,
     #[cfg(unix)]
     inner: tokio::net::UnixListener,
 }
@@ -177,7 +178,7 @@ impl Listener {
     pub fn bind(ep: &Endpoint) -> std::io::Result<Self> {
         match ep {
             #[cfg(windows)]
-            Endpoint::Pipe(name) => Ok(Self { name: name.clone(), next: windows_pipe::create(name, true)? }),
+            Endpoint::Pipe(name) => Ok(Self { name: name.clone(), next: Some(windows_pipe::create(name, true)?) }),
             #[cfg(unix)]
             Endpoint::Socket(path) => {
                 use std::os::unix::fs::PermissionsExt;
@@ -198,9 +199,15 @@ impl Listener {
     pub async fn accept(&mut self) -> std::io::Result<ServerStream> {
         #[cfg(windows)]
         {
-            self.next.connect().await?;
-            let fresh = windows_pipe::create(&self.name, false)?;
-            Ok(std::mem::replace(&mut self.next, fresh))
+            let server = match self.next.take() {
+                Some(s) => s,
+                None => windows_pipe::create(&self.name, false)?,
+            };
+            server.connect().await?;
+            // Serve this client even if the next instance cannot be created now; the next
+            // accept retries (and reports) the creation.
+            self.next = windows_pipe::create(&self.name, false).ok();
+            Ok(server)
         }
         #[cfg(unix)]
         {
@@ -219,9 +226,11 @@ mod windows_pipe {
     use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows::core::w;
 
-    /// SYSTEM and Administrators: full; interactive users (IU): read/write.
+    /// SYSTEM, Administrators and the pipe's owner (the agent's own account, e.g. the
+    /// service's virtual account, which needs it to create the next instances): full;
+    /// interactive users (IU): read/write.
     /// Network logons are excluded by the DACL and by rejecting remote clients.
-    const SDDL: windows::core::PCWSTR = w!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
+    const SDDL: windows::core::PCWSTR = w!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GRGW;;;IU)");
 
     pub fn create(name: &str, first: bool) -> std::io::Result<NamedPipeServer> {
         let mut sd = PSECURITY_DESCRIPTOR::default();
