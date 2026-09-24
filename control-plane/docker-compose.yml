@@ -22,7 +22,11 @@ services:
       retries: 10
 
   control-plane:
-    build: .
+    build:
+      context: .
+      # The web dashboard is built into the image and served at /dashboard/.
+      additional_contexts:
+        dashboard: ../dashboard
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
