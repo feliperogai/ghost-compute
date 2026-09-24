@@ -4,6 +4,7 @@ import type { AppContext } from '../context.js';
 import { withTx } from '../db/pool.js';
 import { AppError, conflict, notFound } from '../errors.js';
 import { audit } from '../audit.js';
+import { holdForJobs } from '../credits/service.js';
 import { combine, type BatchRow } from './aggregate.js';
 import type { Actor } from './datasets.js';
 import { MAX_BATCH_BYTES, MAX_BATCHES, type CreateInferenceInput } from './schemas.js';
@@ -91,6 +92,11 @@ export class InferenceService {
         `INSERT INTO job_events (job_id, type, payload)
          SELECT id, 'job.created', jsonb_build_object('type', 'image-inference', 'groupId', $2::text) FROM unnest($1::uuid[]) AS id`,
         [created.rows.map((r) => r.id), g.id],
+      );
+      await holdForJobs(
+        c,
+        actor.userId,
+        created.rows.map((j) => ({ jobId: j.id, resources, timeoutSeconds: input.timeoutSeconds })),
       );
       return { groupId: g.id, jobs: created.rows };
     });

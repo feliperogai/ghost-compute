@@ -52,7 +52,7 @@ pub struct Connection {
 pub struct WorkerStats {
     pub tasks: TaskCounts,
     pub compute_seconds: u64,
-    /// Internal, non-monetary: 1 credit = 1 minute of successfully completed task time.
+    /// Internal, non-monetary credits this worker earned in total (from the control plane's ledger).
     pub credits: f64,
     pub recent: Vec<RecentTask>,
 }

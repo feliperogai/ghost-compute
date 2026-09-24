@@ -26,6 +26,7 @@ Operador ──REST──▶ control-plane ──(heartbeat, atribuições, HTTP
 - **O dono manda.** Compartilhamento começa desligado; pausar e parar são imediatos; limites de CPU, RAM, temperatura, horário, ociosidade, jogos e apps prioritários são locais e o servidor não os relaxa.
 - **O servidor não confia no worker.** Resultados são verificados por hash; o scheduler revalida toda decisão e o banco impede sobrealocação.
 - **Escolha explicável.** `score = performance + availability + reliability + resource_fit − latency − current_load`, determinístico, pesos por prioridade; cada alocação registra "Worker X foi escolhido porque..." ([ADR 006](docs/adr/006-explainable-scoring.md)).
+- **Créditos virtuais, sem dinheiro.** Workers ganham por tempo × recursos × desempenho × disponibilidade; jobs reservam e pagam o tempo usado. Ledger de partidas dobradas, só inserção, saldo sempre derivado, cadeia de hashes verificável ([ADR 007](docs/adr/007-internal-credits.md)).
 - **Escolha por desempenho medido.** Cada worker é calibrado ao entrar (CPU, GPU, VRAM, RAM, latência, banda, disco) e o scheduler usa esse perfil e o throughput real, não só "tem GPU" ([ADR 005](docs/adr/005-worker-calibration.md)).
 
 ## Workloads

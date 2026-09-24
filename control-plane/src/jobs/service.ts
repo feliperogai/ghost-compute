@@ -4,6 +4,8 @@ import { badRequest, forbidden, notFound } from '../errors.js';
 import type { Role } from '../auth/plugin.js';
 import type { CreateJobInput } from './schemas.js';
 import { JobLifecycle } from './lifecycle.js';
+import { withTx } from '../db/pool.js';
+import { holdForJobs } from '../credits/service.js';
 
 const JOB_COLS = `j.id, j.owner_id, u.email AS owner_email, j.name, j.type, j.requirements, j.resources, j.status,
   j.priority, j.timeout_seconds, j.max_attempts, j.failures, j.error, j.worker_id, j.progress, j.stage,
@@ -61,26 +63,31 @@ export class JobService {
 
   async create(input: CreateJobInput, ownerId: string) {
     const timeout = input.timeout ?? this.ctx.config.JOB_DEFAULT_TIMEOUT_SECONDS;
-    const { rows } = await this.ctx.db.query<{ id: string; created_at: Date }>(
-      `INSERT INTO jobs (owner_id, name, type, requirements, resources, priority, timeout_seconds, max_attempts, input)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
-      [
-        ownerId,
-        input.name ?? null,
-        input.type,
-        input.requirements,
-        input.resources,
-        input.priority,
-        timeout,
-        input.maxAttempts,
-        JSON.stringify(input.input),
-      ],
-    );
-    const { id, created_at } = rows[0]!;
-    await this.ctx.db.query(`INSERT INTO job_events (job_id, type, payload) VALUES ($1, 'job.created', $2)`, [
-      id,
-      { type: input.type, priority: input.priority },
-    ]);
+    // Job + credit hold commit together: no credits, no job.
+    const { id, created_at } = await withTx(this.ctx.db, async (c) => {
+      const { rows } = await c.query<{ id: string; created_at: Date }>(
+        `INSERT INTO jobs (owner_id, name, type, requirements, resources, priority, timeout_seconds, max_attempts, input)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
+        [
+          ownerId,
+          input.name ?? null,
+          input.type,
+          input.requirements,
+          input.resources,
+          input.priority,
+          timeout,
+          input.maxAttempts,
+          JSON.stringify(input.input),
+        ],
+      );
+      const row = rows[0]!;
+      await c.query(`INSERT INTO job_events (job_id, type, payload) VALUES ($1, 'job.created', $2)`, [
+        row.id,
+        { type: input.type, priority: input.priority },
+      ]);
+      await holdForJobs(c, ownerId, [{ jobId: row.id, resources: input.resources, timeoutSeconds: timeout }]);
+      return row;
+    });
     await audit(this.ctx.db, {
       actorType: 'user',
       actorId: ownerId,

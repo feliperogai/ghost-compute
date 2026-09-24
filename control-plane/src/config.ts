@@ -29,6 +29,8 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  /** Virtual credits given to every new user (internal, non-monetary). 0 = none. */
+  CREDITS_INITIAL_GRANT: z.coerce.number().int().min(0).max(1_000_000_000).default(1000),
   MAX_BODY_BYTES: z.coerce.number().int().min(1024).default(1_048_576),
 });
 

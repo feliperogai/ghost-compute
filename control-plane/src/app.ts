@@ -13,6 +13,7 @@ import { inferenceRoutes, workerImageRoutes } from './inference/routes.js';
 import { calibrationWorkerRoutes, performanceRoutes } from './performance/routes.js';
 import { HttpMetrics } from './observability/http-metrics.js';
 import { dashboardRoutes, serveDashboard } from './observability/routes.js';
+import { creditRoutes } from './credits/routes.js';
 
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({
@@ -70,6 +71,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   await app.register(calibrationWorkerRoutes(ctx));
   await app.register(performanceRoutes(ctx));
   await app.register(dashboardRoutes(ctx));
+  await app.register(creditRoutes(ctx));
   await serveDashboard(app);
   registerWebSocket(app, ctx);
 
