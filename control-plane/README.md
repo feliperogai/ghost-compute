@@ -83,6 +83,7 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 | POST | `/v1/jobs` | operator | criar Job (`type, requirements, resources, priority, timeout, maxAttempts, input`) |
 | GET | `/v1/jobs/:id` | viewer | Job completo + histórico de tentativas (score, motivo) |
 | GET | `/v1/jobs/:id/events` | viewer | trilha de eventos |
+| GET | `/v1/jobs/:id/decisions` | viewer | por que cada tentativa foi para cada worker ("Worker X foi escolhido porque...", termos, pesos, segundo colocado) — [ADR 006](../docs/adr/006-explainable-scoring.md) |
 | POST | `/v1/jobs/:id/cancel` | dono ou admin | cancelar |
 | GET | `/v1/jobs` | viewer | histórico (`status`, `type`, `owner=me\|uuid`, `since`, `until`, cursor) |
 | POST | `/v1/datasets` · `/:id/images` · `/:id/seal` | operator | dataset de imagens PNG/JPEG ([ADR 004](../docs/adr/004-image-inference.md)) |

@@ -73,6 +73,10 @@ export interface Capacity {
 
 export interface WorkerSnapshot {
   id: string;
+  /** Display name (explanations only). */
+  name?: string;
+  /** Start of the current uninterrupted online period. */
+  onlineSince?: Date | null;
   /** Agent-reported state. Only `available` / `running` accept new work. */
   state: string;
   lastSeenAt: Date | null;
@@ -116,15 +120,40 @@ export type IneligibleReason =
   | 'NO_SLOTS'
   | 'EXCLUDED';
 
+export interface ScoreTerm {
+  /** Normalized to [0, 1]. */
+  value: number;
+  weight: number;
+  /** ± weight × value (penalties are negative). */
+  contribution: number;
+  /** Raw inputs behind the value, for the explanation. */
+  factors: Record<string, number | string | null>;
+}
+
 export interface ScoreBreakdown {
   total: number;
   components: Record<string, number>;
+  terms?: Record<string, ScoreTerm>;
+}
+
+/** Why a worker was chosen: stored with every placement ("Worker X foi escolhido porque..."). */
+export interface DecisionExplanation {
+  summary: string;
+  reasons: string[];
+  formula: string;
+  priorityBand: string;
+  weights: Record<string, number>;
+  chosen: { workerId: string; name: string | null; total: number; terms: Record<string, ScoreTerm> };
+  runnerUp: { workerId: string; name: string | null; total: number; margin: number } | null;
+  candidates: { workerId: string; name: string | null; total: number; components: Record<string, number> }[];
+  rejected: Partial<Record<IneligibleReason, number>>;
 }
 
 export interface Placement {
   jobId: string;
   workerId: string;
   score: ScoreBreakdown;
+  explanation?: DecisionExplanation;
 }
 
 export interface Unplaced {

@@ -123,8 +123,14 @@ describe('scheduling', () => {
 
     const assigned = await getJob(j.id);
     expect(assigned).toMatchObject({ status: 'ASSIGNED', workerId: w.id });
-    expect(assigned.assignments[0]).toMatchObject({ attempt: 1, status: 'assigned', strategy: 'weighted' });
-    expect(assigned.assignments[0].scoreDetail.components).toHaveProperty('thermal');
+    expect(assigned.assignments[0]).toMatchObject({ attempt: 1, status: 'assigned', strategy: 'score' });
+    expect(assigned.assignments[0].scoreDetail.components).toHaveProperty('current_load');
+    // Every decision is explained.
+    expect(assigned.placementReason).toMatch(/^Worker pc \(.{8}\) foi escolhido porque era o único worker elegível\./);
+    const decisions = (await h.app.inject({ url: `/v1/jobs/${j.id}/decisions`, headers: auth(op) })).json().items;
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ workerId: w.id, strategy: 'score', summary: assigned.placementReason });
+    expect(decisions[0].explanation.chosen.terms.performance).toMatchObject({ weight: 0.3 });
 
     const [a] = await assignments(w);
     expect(a).toMatchObject({ jobId: j.id, name: 'primes', type: 'benchmark', input: { kind: 'primes', size: 1000 }, timeoutSeconds: 3600 });

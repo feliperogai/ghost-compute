@@ -57,7 +57,7 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
 
   async workers(): Promise<WorkerSnapshot[]> {
     const { rows } = await this.ctx.db.query(
-      `SELECT w.id, w.state, w.last_seen_at, w.max_concurrent_tasks, w.workload_types, w.hardware, w.capacity, w.last_usage,
+      `SELECT w.id, w.name, w.online_since, w.state, w.last_seen_at, w.max_concurrent_tasks, w.workload_types, w.hardware, w.capacity, w.last_usage,
               r.n, r.cpu, r.ram, r.gpu, r.vram, r.disk, h.completed, h.failed,
               p.profile, p.verified, p.observed
          FROM workers w
@@ -75,12 +75,14 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
            SELECT count(*) FILTER (WHERE status = 'completed')::int AS completed,
                   count(*) FILTER (WHERE status IN ('failed', 'lost', 'expired', 'timeout'))::int AS failed
              FROM (SELECT status FROM job_assignments
-                    WHERE worker_id = w.id AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 20) recent
+                    WHERE worker_id = w.id AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 50) recent
          ) h ON true
         WHERE w.status = 'active' AND w.state <> 'offline'`,
     );
     return rows.map((r) => ({
       id: r.id,
+      name: r.name,
+      onlineSince: r.online_since,
       state: r.state,
       lastSeenAt: r.last_seen_at,
       maxConcurrent: r.max_concurrent_tasks,

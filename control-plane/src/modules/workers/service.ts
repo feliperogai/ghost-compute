@@ -244,6 +244,7 @@ export class WorkerService {
   async heartbeat(workerId: string, hb: HeartbeatInput) {
     const { rows } = await this.ctx.db.query<{ prev_state: string; state: string }>(
       `UPDATE workers w SET state = $2, last_usage = $3, last_seen_at = now(),
+              online_since = CASE WHEN p.prev_state = 'offline' OR w.online_since IS NULL THEN now() ELSE w.online_since END,
               agent_version = COALESCE($4, w.agent_version),
               capacity = COALESCE($5, w.capacity),
               workload_types = COALESCE($6, w.workload_types)
