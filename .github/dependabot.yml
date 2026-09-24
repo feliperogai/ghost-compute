@@ -12,3 +12,7 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule: { interval: weekly }
+    ignore:
+      # The Rust toolchain is pinned on purpose (rust-toolchain.toml): new lints and the
+      # reproducible WASM module hashes. Bump it by hand, with the hashes.
+      - dependency-name: dtolnay/rust-toolchain
