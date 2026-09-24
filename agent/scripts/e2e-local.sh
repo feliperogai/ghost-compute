@@ -142,6 +142,14 @@ P=$(curl -sf "$API/v1/workers/$WID/profile" -H "authorization: Bearer $ADMIN")
 [ "$(echo "$P" | json ".observed['image-inference'].samples")" -ge 1 ] || fail "real-job throughput not recorded: $P"
 echo "observed on real batches: $(echo "$P" | json ".observed['image-inference'].itemsPerSec") items/s"
 
+echo "== dashboard API"
+D=$(curl -sf "$API/v1/dashboard/overview" -H "authorization: Bearer $ADMIN")
+[ "$(echo "$D" | json .network.workersOnline)" = 1 ] || fail "dashboard overview: $D"
+[ "$(echo "$D" | json .jobs.completed)" -ge 6 ] || fail "dashboard jobs: $D"
+WD=$(curl -sf "$API/v1/dashboard/workers/$WID?range=1h" -H "authorization: Bearer $ADMIN")
+[ "$(echo "$WD" | json '.history.points.length')" -ge 1 ] || fail "no worker history: $WD"
+echo "dashboard: $(echo "$D" | json '.network.workersOnline') online, $(echo "$D" | json '.jobs.completed') jobs completed, API p50 $(echo "$D" | json '.system.api.latencyP50Ms') ms"
+
 echo "== hostile job is refused by the control plane"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/v1/jobs" -H "authorization: Bearer $OP" -H 'content-type: application/json' \
   -d '{"type":"shell","input":{"cmd":"whoami"}}')
