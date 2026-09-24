@@ -145,7 +145,7 @@ describe('determinism and explanation', () => {
     expect(e.formula).toBe('performance + availability + reliability + resource_fit − latency − current_load');
     // The chosen worker's terms are all there, with the raw inputs behind them.
     expect(e.chosen.terms.latency!.factors.latencyMs).toBe(20);
-    expect(e.chosen.terms.reliability!.factors).toEqual({ completed: 10, failed: 0 });
+    expect(e.chosen.terms.reliability!.factors).toEqual({ reputation: null, completed: 10, failed: 0 });
   });
 
   it('names the deciding factor', () => {

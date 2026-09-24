@@ -45,6 +45,7 @@ src/
   scheduler/           algoritmo de alocação (independente)
   jobs/                ciclo de vida, API, adaptador do scheduler
   credits/             créditos virtuais: regras (pricing), ledger imutável, API
+  market/              plataforma aberta: ofertas, reputação objetiva, cadastro, cotação
 migrations/            SQL versionado
 ```
 
@@ -63,7 +64,7 @@ Estados: `QUEUED → ASSIGNED → RUNNING → COMPLETED | FAILED | TIMEOUT`, e `
 
 | Quem | Como |
 |---|---|
-| Usuário | `Authorization: Bearer ghu_…` (token de API; só o hash é salvo). Papéis: `viewer` < `operator` < `admin`. |
+| Usuário | `Authorization: Bearer ghu_…` (token de API; só o hash é salvo). Papéis: `member` (conta pública: só os próprios dados) < `viewer` < `operator` < `admin` (equipe). |
 | Worker (registro) | Token de enrollment `ghe_…` de uso único, gerado por admin, com TTL. |
 | Worker (sessão) | `POST /v1/workers/auth` com `workerId` + `workerSecret` (`ghw_…`) → token HMAC `v1.…` de curta duração. Revogação checada em toda requisição. |
 
@@ -73,6 +74,7 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 
 | Método | Rota | Quem | Função |
 |---|---|---|---|
+| POST | `/v1/signup` | — | conta pública `member` + token (limite por IP; `OPEN_SIGNUP`, `SIGNUP_CREDITS`) — [ADR 008](../docs/adr/008-open-platform.md) |
 | POST | `/v1/admin/users` | admin | cria usuário + token |
 | POST | `/v1/admin/enrollment-tokens` | admin | token de registro de Worker |
 | POST | `/v1/workers/register` | enrollment token | 1. registrar Worker |
@@ -81,7 +83,7 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 | GET | `/v1/workers` | viewer | 4. listar (`status`, `state`, `limit`, `offset`) |
 | GET | `/v1/workers/:id` | viewer | 5. status + atribuições ativas |
 | GET | `/v1/workload-types` | viewer | catálogo de tipos de workload |
-| POST | `/v1/jobs` | operator | criar Job (`type, requirements, resources, priority, timeout, maxAttempts, input`) |
+| POST | `/v1/jobs` | member | criar Job (`type, requirements` + `minReputation`, `resources, priority, timeout, maxAttempts, budget, input`) |
 | GET | `/v1/jobs/:id` | viewer | Job completo + histórico de tentativas (score, motivo) |
 | GET | `/v1/jobs/:id/events` | viewer | trilha de eventos |
 | GET | `/v1/jobs/:id/decisions` | viewer | por que cada tentativa foi para cada worker ("Worker X foi escolhido porque...", termos, pesos, segundo colocado) — [ADR 006](../docs/adr/006-explainable-scoring.md) |
@@ -103,6 +105,12 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 | GET | `/v1/workers/:id/profile` | viewer | `WorkerPerformanceProfile`, resumo, throughput observado, histórico |
 | POST | `/v1/workers/:id/calibrate` | admin | forçar nova calibração |
 | GET | `/v1/dashboard/overview` · `/history?range=1h\|6h\|24h\|7d` · `/workers` · `/workers/:id` · `/errors` | viewer | observabilidade para o [painel](../dashboard/) (servido em `/dashboard/`) |
+| POST | `/v1/provider/enrollment-tokens` | member | token para registrar um computador próprio |
+| GET | `/v1/provider/workers` | member | meus computadores: estado, oferta, reputação, saldo |
+| GET · PUT | `/v1/provider/workers/:id/offer` | dono | preço (créditos/min por recurso), disponibilidade (janelas no fuso), limites, `listed` |
+| GET | `/v1/market/offers` | member | mercado: hardware, preço, janelas, limites, reputação (`type`, `gpu`, `availableNow`) |
+| GET | `/v1/market/workers/:id/reputation` | member | reputação com métricas (concluídos, falhas, uptime, resposta) |
+| POST | `/v1/market/quote` | member | quem aceitaria o job e o custo máximo, pelas regras do scheduler |
 | GET | `/v1/credits/wallet` | viewer | saldo (derivado do ledger), reservas abertas, totais por tipo — [ADR 007](../docs/adr/007-internal-credits.md) |
 | GET | `/v1/credits/transactions` | viewer | extrato da própria carteira, com saldo após cada movimento (`kind`, cursor) |
 | GET | `/v1/credits/earnings` | viewer | ganhos dos próprios workers (admin: todos), com o cálculo de cada um (`workerId`) |

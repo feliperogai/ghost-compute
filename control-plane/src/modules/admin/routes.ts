@@ -14,7 +14,7 @@ export const adminRoutes =
         schema: {
           body: z.object({
             email: z.email().max(254),
-            role: z.enum(['admin', 'operator', 'viewer']),
+            role: z.enum(['admin', 'operator', 'viewer', 'member']),
             tokenName: z.string().min(1).max(100).default('default'),
           }),
         },

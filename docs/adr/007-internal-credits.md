@@ -1,6 +1,6 @@
 # ADR 007 — Créditos internos com ledger imutável
 
-**Status:** aceito. Substitui o contador "1 crédito = 1 minuto" de `/v1/worker/me/stats`.
+**Status:** aceito; parcialmente substituído pelo [ADR 008](008-open-platform.md). O ledger, as garantias e os testes continuam valendo. Mudou quem paga o worker: agora o cliente paga o preço do provedor (liquidação escrow → worker). A fórmula de ganho emitido (tempo × recursos × desempenho × disponibilidade) e a carteira `consumption` não são mais usadas para jobs novos.
 
 ## Escopo
 

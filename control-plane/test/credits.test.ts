@@ -6,15 +6,7 @@ import { createEngine } from '../src/jobs/runner.js';
 import { withTx } from '../src/db/pool.js';
 import { Ledger } from '../src/credits/ledger.js';
 import { settleJob } from '../src/credits/service.js';
-import {
-  attemptCharge,
-  availabilityMultiplier,
-  computeEarning,
-  holdAmount,
-  performanceMultiplier,
-  ratePerMinute,
-  toMilli,
-} from '../src/credits/pricing.js';
+import { attemptCharge, holdAmount, ratePerMinute, toMilli } from '../src/credits/pricing.js';
 import type { SchedulerEngine } from '../src/scheduler/index.js';
 
 const RES = { cpuCores: 1, ramMb: 512, gpu: false, vramMb: 0, diskMb: 0 };
@@ -29,28 +21,6 @@ describe('pricing (pure, deterministic)', () => {
     expect(attemptCharge(1125, 30)).toBe(563);
     expect(attemptCharge(1125, 0.2)).toBe(19); // minimum one second
     expect(attemptCharge(1125, 60)).toBe(holdAmount(RES, 60));
-  });
-
-  it('multipliers: performance from the verified profile, availability from time online', () => {
-    expect(performanceMultiplier({ verified: false, score: 5000 })).toBe(0.75);
-    expect(performanceMultiplier({ verified: true, score: null })).toBe(0.75);
-    expect(performanceMultiplier({ verified: true, score: 1000 })).toBe(1);
-    expect(performanceMultiplier({ verified: true, score: 1234 })).toBe(1.234);
-    expect(performanceMultiplier({ verified: true, score: 100 })).toBe(0.5);
-    expect(performanceMultiplier({ verified: true, score: 9000 })).toBe(2);
-    expect(availabilityMultiplier(0)).toBe(0.8);
-    expect(availabilityMultiplier(720)).toBe(1);
-    expect(availabilityMultiplier(1440)).toBe(1.2);
-    expect(availabilityMultiplier(99_999)).toBe(1.2);
-  });
-
-  it('earning = minutes × rate × performance × availability, same inputs → same amount', () => {
-    const input = { workerName: 'pc', seconds: 600, resources: RES, performance: { verified: true, score: 1500 }, onlineMinutes: 1440 };
-    const e = computeEarning(input);
-    expect(e.amount).toBe(Math.floor(10 * 1125 * 1.5 * 1.2)); // 20250
-    expect(computeEarning(input)).toEqual(e);
-    expect(e.detail.summary).toMatch(/^Worker pc ganhou 20,25 créditos: 10 min × 1,125 créditos\/min .* desempenho 1,5 \(score 1500\) × disponibilidade 1,2/);
-    expect(computeEarning({ ...input, seconds: 0 }).amount).toBe(0);
   });
 
   it('parses credit amounts exactly; rejects what is not a whole millicredit', () => {
@@ -121,42 +91,37 @@ describe('wallets and the job cycle', () => {
     expect(cols.rows).toEqual([]);
   });
 
-  it('creating a job holds its maximum cost; completing it charges the time used and pays the worker', async () => {
+  it('creating a job holds its budget; completing it pays the provider its price for the time used', async () => {
     const { w, j, a } = await runJob(op, { timeout: 3600 });
+    // No budget given: standard price × timeout.
     expect((await wallet()).balance.credits).toBe(100 - 67.5);
     expect((await wallet()).held.credits).toBe(67.5);
+    expect(j.budget).toBe(67.5);
 
     await ranFor(a, 600);
     await post(w, `/v1/worker/assignments/${a}/result`, { status: 'completed', output: { ok: 1 }, outputSha256: sha({ ok: 1 }) });
 
-    // Owner: charged 10 minutes × 1.125 = 11.25 (±1 s of test time), rest refunded.
+    // Customer: pays 10 minutes × 1.125 (standard price; ±1 s of test time), the rest comes back.
     const spend = (await get('/v1/credits/spending')).json();
     expect(spend.items).toHaveLength(1);
     const s = spend.items[0];
-    expect(s).toMatchObject({ jobId: j.id, state: 'settled', jobStatus: 'COMPLETED', held: { credits: 67.5 } });
-    expect(s.charged.credits).toBeGreaterThanOrEqual(11.25);
-    expect(s.charged.credits).toBeLessThan(11.3);
-    expect(s.charged.milli + s.refunded.milli).toBe(67_500);
+    expect(s).toMatchObject({ jobId: j.id, state: 'settled', jobStatus: 'COMPLETED', budget: { credits: 67.5 } });
+    expect(s.paid.credits).toBeGreaterThanOrEqual(11.25);
+    expect(s.paid.credits).toBeLessThan(11.3);
+    expect(s.paid.milli + s.refunded.milli).toBe(67_500);
+    expect(s.attempts[0]).toMatchObject({ workerId: w.id, ratePerMinute: 1125, charge: s.paid.milli });
+    // Reproducible from the stored inputs.
+    expect(attemptCharge(s.attempts[0].ratePerMinute, s.attempts[0].seconds)).toBe(s.paid.milli);
     const after = await wallet();
     expect(after.held.credits).toBe(0);
-    expect(after.balance.milli).toBe(100_000 - s.charged.milli);
+    expect(after.balance.milli).toBe(100_000 - s.paid.milli);
 
-    // Worker: paid for compute time × resources × performance × availability, with the calculation.
+    // Provider: receives exactly what the customer paid, with the calculation.
     const earn = (await get(`/v1/credits/earnings?workerId=${w.id}`, h.adminToken)).json();
     expect(earn.items).toHaveLength(1);
     const e = earn.items[0];
-    expect(e.calculation.performance).toEqual({ verified: false, score: null, multiplier: 0.75 });
-    expect(e.calculation.availability.multiplier).toBeCloseTo(0.8, 2); // freshly online
-    expect(e.summary).toMatch(/^Worker pc-.{4} ganhou .* créditos: 10 min × 1,125 créditos\/min/);
-    // Reproducible from the stored inputs alone.
-    const again = computeEarning({
-      workerName: e.workerName,
-      seconds: e.calculation.seconds,
-      resources: e.calculation.resources,
-      performance: { verified: e.calculation.performance.verified, score: e.calculation.performance.score },
-      onlineMinutes: e.calculation.availability.onlineMinutes,
-    });
-    expect(again.amount).toBe(e.amount.milli);
+    expect(e.amount.milli).toBe(s.paid.milli);
+    expect(e.summary).toMatch(/^Worker pc-.{4} recebeu .* créditos: 10 min × 1,125 créditos\/min/);
 
     // The desktop app's numbers come from the same ledger.
     const stats = (await h.app.inject({ url: '/v1/worker/me/stats', headers: auth(w.token) })).json();
@@ -176,7 +141,7 @@ describe('wallets and the job cycle', () => {
     expect(w2.balance.credits).toBe(100);
     expect(w2.held.credits).toBe(0);
     const s = (await get('/v1/credits/spending')).json();
-    expect(s.items.map((i: { jobStatus: string; charged: { credits: number } }) => [i.jobStatus, i.charged.credits]).sort()).toEqual([
+    expect(s.items.map((i: { jobStatus: string; paid: { credits: number } }) => [i.jobStatus, i.paid.credits]).sort()).toEqual([
       ['CANCELLED', 0],
       ['FAILED', 0],
     ]);
@@ -442,11 +407,11 @@ describe('immutable, auditable ledger', () => {
     await post(w, `/v1/worker/assignments/${a}/result`, { status: 'completed', output: { ok: 1 }, outputSha256: sha({ ok: 1 }) });
     const ok = await verify();
     expect(ok).toMatchObject({ ok: true, problems: [] });
-    expect(ok.transactions).toBeGreaterThanOrEqual(4); // 2 signups, hold, earning, settlement
+    expect(ok.transactions).toBe(4); // 2 signups, hold, settlement (pays the provider)
 
     const ledger = (await get('/v1/credits/ledger', h.adminToken)).json().items;
     for (let i = 1; i < ledger.length; i++) expect(ledger[i].prevHash).toBe(ledger[i - 1].hash);
-    expect(ledger.map((t: { kind: string }) => t.kind)).toEqual(['grant', 'grant', 'hold', 'earning', 'settlement']);
+    expect(ledger.map((t: { kind: string }) => t.kind)).toEqual(['grant', 'grant', 'hold', 'settlement']);
 
     // Someone with superuser rights bypasses the triggers and edits history.
     await h.rt.db.query(`ALTER TABLE credit_entries DISABLE TRIGGER credit_entries_immutable`);

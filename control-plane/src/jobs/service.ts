@@ -1,15 +1,15 @@
 import type { AppContext } from '../context.js';
 import { audit } from '../audit.js';
 import { badRequest, forbidden, notFound } from '../errors.js';
-import type { Role } from '../auth/plugin.js';
+import { isStaff, type Role } from '../auth/plugin.js';
 import type { CreateJobInput } from './schemas.js';
 import { JobLifecycle } from './lifecycle.js';
 import { withTx } from '../db/pool.js';
-import { holdForJobs } from '../credits/service.js';
+import { defaultBudget, holdForJobs } from '../credits/service.js';
 
 const JOB_COLS = `j.id, j.owner_id, u.email AS owner_email, j.name, j.type, j.requirements, j.resources, j.status,
   j.priority, j.timeout_seconds, j.max_attempts, j.failures, j.error, j.worker_id, j.progress, j.stage,
-  j.pending_reason, j.output_sha256, j.created_at, j.assigned_at, j.started_at, j.finished_at, j.updated_at,
+  j.pending_reason, j.output_sha256, j.budget, j.created_at, j.assigned_at, j.started_at, j.finished_at, j.updated_at,
   (SELECT count(*)::int FROM job_assignments a WHERE a.job_id = j.id) AS attempts`;
 
 const iso = (d: Date | null) => d?.toISOString() ?? null;
@@ -32,6 +32,8 @@ function toDto(r: Record<string, any>, full = false) {
     progress: r.progress,
     stage: r.stage,
     pendingReason: r.pending_reason,
+    /** Most the job may cost, credits (null: created before budgets). */
+    budget: r.budget === null ? null : Number(r.budget) / 1000,
     error: r.error,
     createdAt: iso(r.created_at),
     assignedAt: iso(r.assigned_at),
@@ -63,11 +65,12 @@ export class JobService {
 
   async create(input: CreateJobInput, ownerId: string) {
     const timeout = input.timeout ?? this.ctx.config.JOB_DEFAULT_TIMEOUT_SECONDS;
+    const budget = input.budget ?? defaultBudget(input.resources, timeout);
     // Job + credit hold commit together: no credits, no job.
     const { id, created_at } = await withTx(this.ctx.db, async (c) => {
       const { rows } = await c.query<{ id: string; created_at: Date }>(
-        `INSERT INTO jobs (owner_id, name, type, requirements, resources, priority, timeout_seconds, max_attempts, input)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
+        `INSERT INTO jobs (owner_id, name, type, requirements, resources, priority, timeout_seconds, max_attempts, input, budget)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, created_at`,
         [
           ownerId,
           input.name ?? null,
@@ -78,6 +81,7 @@ export class JobService {
           timeout,
           input.maxAttempts,
           JSON.stringify(input.input),
+          budget,
         ],
       );
       const row = rows[0]!;
@@ -85,7 +89,9 @@ export class JobService {
         row.id,
         { type: input.type, priority: input.priority },
       ]);
-      await holdForJobs(c, ownerId, [{ jobId: row.id, resources: input.resources, timeoutSeconds: timeout }]);
+      await holdForJobs(c, ownerId, [
+        { jobId: row.id, amount: budget, detail: { budget, defaulted: input.budget === undefined, timeoutSeconds: timeout, resources: input.resources } },
+      ]);
       return row;
     });
     await audit(this.ctx.db, {
@@ -211,7 +217,7 @@ export class JobService {
   /** Owners cancel their own jobs; admins any job. */
   async cancel(id: string, reason: string, actor: { userId: string; role: Role }) {
     const { rows } = await this.ctx.db.query<{ owner_id: string }>(`SELECT owner_id FROM jobs WHERE id = $1`, [id]);
-    if (!rows[0]) throw notFound('Job');
+    if (!rows[0] || (!isStaff(actor.role) && rows[0].owner_id !== actor.userId)) throw notFound('Job');
     if (rows[0].owner_id !== actor.userId && actor.role !== 'admin') throw forbidden('Only the owner or an admin can cancel');
     await this.lifecycle.cancel(id, reason);
     await audit(this.ctx.db, {
@@ -223,6 +229,12 @@ export class JobService {
       details: { reason },
     });
     return this.get(id);
+  }
+
+  /** Staff see any job; members only their own. Same 404 either way: ids do not leak. */
+  async assertVisible(id: string, actor: { userId: string; role: Role }) {
+    const { rows } = await this.ctx.db.query<{ owner_id: string }>(`SELECT owner_id FROM jobs WHERE id = $1`, [id]);
+    if (!rows[0] || (!isStaff(actor.role) && rows[0].owner_id !== actor.userId)) throw notFound('Job');
   }
 
   private async assertExists(id: string) {
