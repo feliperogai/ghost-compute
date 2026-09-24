@@ -7,6 +7,7 @@ import type { Hardware } from '../schemas.js';
 import { JobLifecycle, type AssignmentOffer } from '../../jobs/lifecycle.js';
 import type { Capacity } from '../../scheduler/types.js';
 import { CalibrationService } from '../../performance/service.js';
+import { CreditService } from '../../credits/service.js';
 
 export type ReportedState = 'waiting' | 'available' | 'running' | 'paused' | 'stopped';
 
@@ -193,7 +194,8 @@ export class WorkerService {
 
   /**
    * Contribution summary shown in the desktop app.
-   * Credits are internal and non-monetary: 1 credit = 1 minute of successfully completed task time.
+   * Credits are internal and non-monetary, and come from the credit ledger (never stored):
+   * `credits` = everything this worker ever earned; `wallet` = what it holds now.
    */
   async stats(workerId: string, recentLimit: number) {
     const totals = await this.ctx.db.query<{
@@ -221,10 +223,13 @@ export class WorkerService {
       [workerId, recentLimit],
     );
     const t = totals.rows[0]!;
+    const wallet = await new CreditService(this.ctx).workerWalletView(workerId);
+    const earned = (wallet.totals as Record<string, { in: { credits: number } }>).earning?.in.credits ?? 0;
     return {
       tasks: { succeeded: t.completed, failed: t.failed, preempted: t.interrupted, active: t.active },
       computeSeconds: Math.round(t.seconds),
-      credits: Math.round((t.seconds / 60) * 100) / 100,
+      credits: earned,
+      wallet: { balance: wallet.balance.credits, earned },
       recent: recent.rows.map((r) => ({
         assignmentId: r.id,
         jobId: r.job_id,

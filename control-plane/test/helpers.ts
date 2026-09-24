@@ -13,7 +13,8 @@ export interface Harness {
 }
 
 export async function setup(overrides: Record<string, string> = {}): Promise<Harness> {
-  Object.assign(process.env, overrides);
+  // Plenty of credits unless a test is about credits.
+  Object.assign(process.env, { CREDITS_INITIAL_GRANT: '1000000' }, overrides);
   const rt = await createRuntime();
   await migrate(rt.db);
   await reset(rt);
@@ -32,9 +33,11 @@ export async function setup(overrides: Record<string, string> = {}): Promise<Har
 }
 
 export async function reset(rt: Runtime) {
+  // The ledger refuses TRUNCATE unless the session opts in (tests only).
   await rt.db.query(
-    `TRUNCATE audit_log, worker_metrics, network_metrics, api_metrics, api_errors, scheduler_decisions, worker_performance, worker_calibrations, job_events, job_assignments, jobs, job_groups, dataset_images, datasets, enrollment_tokens,
-              workers, api_tokens, users CASCADE`,
+    `BEGIN; SET LOCAL ghost.allow_ledger_truncate = 'on';
+     TRUNCATE credit_entries, credit_transactions, credit_wallets, audit_log, worker_metrics, network_metrics, api_metrics, api_errors, scheduler_decisions, worker_performance, worker_calibrations, job_events, job_assignments, jobs, job_groups, dataset_images, datasets, enrollment_tokens,
+              workers, api_tokens, users CASCADE; COMMIT`,
   );
   await rt.redis.flushdb();
 }
