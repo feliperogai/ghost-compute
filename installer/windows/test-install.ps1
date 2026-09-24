@@ -71,13 +71,22 @@ if (Test-Path $cfg) {
 
 # The connection code: used once by the service and deleted; never in the install log.
 Check (WaitFor { -not (Test-Path (Join-Path $data 'enroll.ini')) }) 'connection code file consumed and deleted by the service'
-Check (-not (Select-String -Path "$logs\install.log" -Pattern $token -SimpleMatch -Quiet)) 'connection code not written to the installer log'
+$leaks = @(Select-String -Path "$logs\install.log" -Pattern $token -SimpleMatch)
+Check ($leaks.Count -eq 0) 'connection code not written to the installer log'
+$leaks | Select-Object -First 5 | ForEach-Object { Write-Host "       leak at line $($_.LineNumber): $($_.Line.Replace($token, '<CODE>'))" }
 
 # The service is up, not connected (the code was fake), and says so over IPC.
 $agent = Join-Path $prog 'ghost-agent.exe'
-$st = & $agent status 2>&1 | Out-String
-Check ($st -match 'NOT_ENROLLED') "agent answers over IPC and reports NOT_ENROLLED (got: $($st.Trim()))"
+# The fake code is tried against an unreachable server first; the answer must still come.
+$st = ''
+$answered = WaitFor { $script:st = & $agent status 2>&1 | Out-String; $script:st -match 'NOT_ENROLLED' } 60
+Check $answered "agent answers over IPC and reports NOT_ENROLLED (got: $($st.Trim()))"
 Check (WaitFor { Test-Path (Join-Path $data 'logs') }) 'service writes its logs'
+if (-not $answered) {
+  Get-ChildItem (Join-Path $data 'logs') -File -ErrorAction SilentlyContinue | ForEach-Object {
+    Write-Host "       --- $($_.Name)"; Get-Content $_.FullName -Tail 40 | ForEach-Object { Write-Host "       $_" }
+  }
+}
 
 # Firewall: no inbound rule, one outbound block for the sandbox.
 $rule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
