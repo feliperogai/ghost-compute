@@ -22,7 +22,7 @@ Tudo isto é mostrado ao dono antes de instalar, e fica instalado em
 | 4. Inicia o serviço | Ao fim da instalação. O compartilhamento continua **desligado** até o dono clicar em *Iniciar* no app. |
 | 5. Firewall, só o necessário | Nenhuma porta é aberta (o agente só faz conexões de saída HTTPS). Uma regra **bloqueia** a rede do `ghost-sandbox.exe`. Pode ser desmarcada na tela de opções. |
 | 6. Configuração segura | `C:\ProgramData\ghost\` com ACL protegida: só SYSTEM, Administradores e o serviço. O `agent.toml` é escrito pelo próprio agente, que aceita só `https`. Credenciais protegidas por DPAPI. |
-| 7. Login | Na instalação: código de conexão `ghe_…` (opcional). Depois: pelo app, com o código ou o token da conta `ghu_…`. O token da conta é usado uma vez e nunca é guardado. O código deixado pelo instalador é lido e apagado pelo serviço ao iniciar. |
+| 7. Login | Na instalação: código de conexão `ghe_…` (opcional). Depois: pelo app, com o código ou o token da conta `ghu_…`. O token da conta é usado uma vez e nunca é guardado. O instalador entrega o código ao agente (`ghost-agent save-connection-code`, só aceita `ghe_…`); o serviço o lê uma vez ao iniciar e apaga o arquivo. |
 | 8. Atalhos | Menu Iniciar: *ghost* (painel deste computador), *Como o ghost funciona* e *Desinstalar ghost*. Na Área de Trabalho: *ghost* (opcional). O app abre com o Windows, perto do relógio (opcional, recomendado). |
 | 9. Remoção limpa | Avisa o servidor que o computador saiu. Remove serviço, programas, `C:\ProgramData\ghost` inteira, regra de firewall, atalhos, inicialização automática e `HKLM\SOFTWARE\ghost`. Atualizações preservam configuração e credenciais. |
 
@@ -46,7 +46,7 @@ msiexec /x ghost-worker-0.1.X.msi /qn
 | Propriedade | Padrão | Efeito |
 |---|---|---|
 | `SERVER_URL` | valor do build | Servidor. Precisa ser `https://`. |
-| `ENROLLMENT_TOKEN` | vazio | Código de conexão de uso único. Marcado como oculto: não vai para o log do MSI (há teste para isso). |
+| `ENROLLMENT_TOKEN` | vazio | Código de conexão de uso único. Nunca aparece no log do MSI: propriedade oculta, ação sem registro do comando (`HideTarget`, `WixSilentExec`) e nada de `IniFile`/registro, cujos valores o Windows Installer registra. O `test-install.ps1` confere. |
 | `AUTOSTART_APP` | 1 | App na bandeja ao entrar no Windows. Sem ele o serviço não sabe se há alguém usando o computador, e **não compartilha**. |
 | `DESKTOP_SHORTCUT` | 1 | Atalho do painel na Área de Trabalho. |
 | `FIREWALL_RULE` | 1 | Regra que bloqueia a rede do sandbox. |
