@@ -22,7 +22,7 @@
           Compressed="yes">
 
     <BootstrapperApplication>
-      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" LicenseUrl="" SuppressOptionsUI="yes" SuppressRepair="yes" ShowVersion="yes" />
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" SuppressOptionsUI="yes" SuppressRepair="yes" ShowVersion="yes" />
     </BootstrapperApplication>
 
     <!-- WebView2 is installed per machine (x64 registry view) or per user. -->

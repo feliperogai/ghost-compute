@@ -34,6 +34,11 @@ foreach ($ext in 'WixToolset.UI.wixext', 'WixToolset.Util.wixext', 'WixToolset.B
   wix extension add -g "$ext/$WixVersion"
   if ($LASTEXITCODE) { throw "wix extension add $ext failed" }
 }
+# The BAL package ships its dll under another name (WixToolset.BootstrapperApplications.wixext.dll),
+# so `-ext WixToolset.Bal.wixext` cannot find it by name; pass the file.
+$balDir = Join-Path $env:USERPROFILE ".wix\extensions\WixToolset.Bal.wixext\$WixVersion"
+$balExt = Get-ChildItem $balDir -Recurse -Filter '*.wixext.dll' | Select-Object -First 1
+if (-not $balExt) { throw "BAL extension dll not found under $balDir" }
 
 # --- The explanation shown in the installer = the file installed with it -------
 function ConvertTo-Rtf([string] $text) {
@@ -78,7 +83,7 @@ if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Micr
 # --- Setup bundle ------------------------------------------------------------------
 $setup = Join-Path $OutDir "ghost-worker-setup-$Version.exe"
 wix build -arch x64 `
-  -ext WixToolset.Bal.wixext -ext WixToolset.Util.wixext `
+  -ext $balExt.FullName -ext WixToolset.Util.wixext `
   -d "Version=$Version" -d "IconFile=$IconFile" -d "MsiFile=$msi" -d "WebView2Bootstrapper=$wv2" `
   -intermediatefolder (Join-Path $obj 'bundle') `
   (Join-Path $here 'Bundle.wxs') -o $setup
