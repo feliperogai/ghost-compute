@@ -29,7 +29,7 @@ export const inferenceRoutes =
     app.post(
       '/v1/datasets',
       { onRequest: requireUser(ctx, 'member'), schema: { body: createDatasetSchema } },
-      async (req, reply) => reply.status(201).send(await datasets.create(req.body.name, actor(req).userId)),
+      async (req, reply) => reply.status(201).send(await datasets.create(req.body.name, actor(req))),
     );
 
     app.get('/v1/datasets', { onRequest: requireUser(ctx, 'member') }, async (req) => datasets.list(actor(req).userId));

@@ -44,6 +44,8 @@ export function ineligibility(job: JobSpec, w: WorkerSnapshot, o: EligibilityOpt
   if (!w.lastSeenAt || o.now.getTime() - w.lastSeenAt.getTime() > o.offlineAfterMs) return 'OFFLINE';
   if (w.state !== 'available' && w.state !== 'running') return 'NOT_ACCEPTING';
   if (job.excludedWorkers.includes(w.id)) return 'EXCLUDED';
+  // Replicas must come from different people: one owner cannot confirm itself.
+  if (w.ownerId && job.excludedOwners?.includes(w.ownerId)) return 'EXCLUDED';
   if (!w.capacity) return 'NO_CAPACITY_REPORTED';
   if (!w.workloadTypes.includes(job.type)) return 'TYPE_UNSUPPORTED';
   if (w.activeAssignments >= w.maxConcurrent) return 'NO_SLOTS';

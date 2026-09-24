@@ -49,6 +49,11 @@ export const createJobSchema = z
     maxAttempts: z.number().int().min(1).max(10).default(3),
     /** Most the job may cost, in credits (held at creation). Default: standard price × timeout. */
     budget: creditAmount.optional(),
+    /**
+     * replicate: run on computers of different owners until two results agree (default for
+     * public accounts); none: trust the first result (default for staff).
+     */
+    verification: z.enum(['none', 'replicate']).optional(),
     input: json(MAX_INPUT_BYTES),
   })
   .strict()

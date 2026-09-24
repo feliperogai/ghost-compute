@@ -192,7 +192,8 @@ describe('accounts and isolation', () => {
     expect((await req('POST', `/v1/jobs/${jb.id}/cancel`, a.token, {})).statusCode).toBe(404);
     const list = (await req('GET', `/v1/jobs?owner=${b.userId}`, a.token)).json();
     expect(list.items.map((j: { id: string }) => j.id)).toEqual([ja.id]);
-    expect((await req('GET', `/v1/jobs/${ja.id}`, a.token)).json().budget).toBe(11.25);
+    // Public accounts get verified results by default, with room for every replica.
+    expect((await req('GET', `/v1/jobs/${ja.id}`, a.token)).json()).toMatchObject({ budget: 33.75, verification: 'replicate' });
 
     expect((await setOffer(b.token, wa, { listed: false })).statusCode).toBe(404);
     expect((await req('GET', `/v1/credits/workers/${wa.id}/wallet`, b.token)).statusCode).toBe(404);
@@ -232,7 +233,7 @@ describe('matching: requirements + capabilities + price + reliability', () => {
     const w = await providerWorker(p.token, 'rig');
     // 2 credits per core-minute, nothing for RAM: 1 core × 10 min = 20 credits.
     expect((await setOffer(p.token, w, { price: { cpuCore: 2, ramGb: 0, gpu: 0, vramGb: 0 } })).statusCode).toBe(200);
-    const j = (await job(c.token, { budget: 25 })).json();
+    const j = (await job(c.token, { budget: 25, verification: 'none' })).json();
     expect(j.budget).toBe(25);
     expect((await req('GET', '/v1/credits/wallet', c.token)).json().balance.credits).toBe(75);
 
@@ -354,7 +355,7 @@ describe('reputation cannot be manipulated', () => {
     const w = await providerWorker(p.token, 'rig');
     const engine = createEngine(h.rt);
     for (let i = 0; i < 3; i++) {
-      await job(p.token);
+      await job(p.token, { verification: 'none' });
       await engine.tick();
       await runOn(w, 5);
     }
@@ -362,7 +363,7 @@ describe('reputation cannot be manipulated', () => {
     expect(rep.metrics).toMatchObject({ completed: 0, failed: 0, customers: 0 });
 
     const c = await signup('c@ex.test');
-    await job(c.token);
+    await job(c.token, { verification: 'none' });
     await createEngine(h.rt).tick();
     await runOn(w, 5);
     const after = (await req('GET', `/v1/market/workers/${w.id}/reputation`, c.token)).json();

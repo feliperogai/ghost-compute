@@ -11,6 +11,8 @@ import { refreshGroupForJob } from '../inference/groups.js';
 import { validateCheckpoint } from '../inference/schemas.js';
 import { CalibrationService } from '../performance/service.js';
 import { settleJob } from '../credits/service.js';
+import { verdict } from './verification.js';
+import { owedSql } from '../credits/owed.js';
 import { maxAttemptCost, normalizeOffer, priceRate } from '../market/offer.js';
 
 export interface AssignmentOffer {
@@ -49,6 +51,7 @@ interface JobRow {
   retry_on_timeout: boolean;
   /** Millicredits (bigint → string); null for jobs created before budgets. */
   budget: string | null;
+  verification: 'none' | 'replicate';
 }
 
 interface AssignmentRow {
@@ -131,12 +134,7 @@ export class JobLifecycle {
       if (!offer.listed) return null;
       const rate = priceRate(offer.price, reserved);
       if (job.budget !== null) {
-        const spent = await c.query<{ s: string }>(
-          `SELECT COALESCE(sum(LEAST(ceil(price_rate * ceil(EXTRACT(EPOCH FROM finished_at - started_at)) / 60.0),
-                                     ceil(price_rate * $2 / 60.0))), 0)::text AS s
-             FROM job_assignments WHERE job_id = $1 AND status = 'timeout' AND $3 AND price_rate IS NOT NULL AND started_at IS NOT NULL`,
-          [job.id, job.timeout_seconds, job.retry_on_timeout],
-        );
+        const spent = await c.query<{ s: string }>(`SELECT ${owedSql('j')}::text AS s FROM jobs j WHERE j.id = $1`, [job.id]);
         if (maxAttemptCost(rate, job.timeout_seconds) > Number(job.budget) - Number(spent.rows[0]!.s)) return null;
       }
       const a = await c.query<{ id: string; attempt: number; accept_deadline: Date }>(
@@ -250,7 +248,9 @@ export class JobLifecycle {
         if (!job.group_id) throw badRequest('This job does not accept checkpoints');
         const problem = validateCheckpoint(job.input, checkpoint);
         if (problem) throw badRequest(`Invalid checkpoint: ${problem}`);
-        await c.query(`UPDATE jobs SET checkpoint = $2 WHERE id = $1`, [job.id, JSON.stringify(checkpoint)]);
+        // Verified jobs keep none: a replica must never start from another computer's work.
+        if (job.verification !== 'replicate')
+          await c.query(`UPDATE jobs SET checkpoint = $2 WHERE id = $1`, [job.id, JSON.stringify(checkpoint)]);
       }
       await c.query(`UPDATE job_assignments SET last_seen_at = now() WHERE id = $1`, [a.id]);
       const prev = await c.query<{ stage: string | null }>(`SELECT stage FROM jobs WHERE id = $1`, [job.id]);
@@ -269,25 +269,24 @@ export class JobLifecycle {
   async complete(workerId: string, assignmentId: string, output: unknown, outputSha256: string) {
     const actual = sha256Hex(JSON.stringify(output));
     if (actual !== outputSha256.toLowerCase()) throw badRequest('outputSha256 does not match output');
-    const res = await withTx(this.ctx.db, async (c) => {
+    const res = await withTx(this.ctx.db, async (c): Promise<After & { observation: ReturnType<typeof observe> }> => {
       const { job, a } = await this.lockOwned(c, workerId, assignmentId);
       if (a.status !== 'running') throw notActive();
-      await c.query(`UPDATE job_assignments SET status = 'completed', finished_at = now() WHERE id = $1`, [a.id]);
+      // Every attempt keeps its own result: replicas are compared before the job gets one.
       await c.query(
-        `UPDATE jobs SET status = 'COMPLETED', output = $2, output_sha256 = $3, error = NULL, progress = 1,
-                         finished_at = now(), updated_at = now() WHERE id = $1`,
-        [job.id, JSON.stringify(output), actual],
+        `UPDATE job_assignments SET status = 'completed', finished_at = now(), output = $2, output_sha256 = $3 WHERE id = $1`,
+        [a.id, JSON.stringify(output), actual],
       );
+      const observation = observe(job.type, output, a.started_at);
+      if (job.verification === 'replicate') {
+        const r = await this.verifyReplicas(c, job, a, actual);
+        return { ...r, observation };
+      }
+      await this.finishCompleted(c, job, output, actual);
       await event(c, job.id, a.id, workerId, 'job.completed', { attempt: a.attempt, outputSha256: actual });
       // Credits move in the same transaction as the state change: all or nothing.
       await settleJob(c, job.id);
-      return {
-        jobId: job.id,
-        status: 'COMPLETED' as const,
-        workerId,
-        assignmentId: a.id,
-        observation: observe(job.type, output, a.started_at),
-      };
+      return { jobId: job.id, status: 'COMPLETED', workerId, assignmentId: a.id, observation };
     });
     const { observation, ...after } = res;
     await this.after(after);
@@ -297,6 +296,66 @@ export class JobLifecycle {
         .recordObservation(workerId, observation.type, observation.items, observation.seconds)
         .catch(() => {});
     return { assignmentId, jobStatus: res.status };
+  }
+
+  private async finishCompleted(c: pg.PoolClient, job: JobRow, output: unknown, sha: string) {
+    await c.query(
+      `UPDATE jobs SET status = 'COMPLETED', output = $2, output_sha256 = $3, error = NULL, progress = 1,
+                       finished_at = now(), updated_at = now() WHERE id = $1`,
+      [job.id, JSON.stringify(output), sha],
+    );
+  }
+
+  /**
+   * A replica of a verified job finished. Two results from different owners that agree
+   * complete the job; otherwise another replica is queued (other owners only), up to
+   * MAX_REPLICAS, after which the job fails with RESULT_MISMATCH and nobody is paid.
+   */
+  private async verifyReplicas(c: pg.PoolClient, job: JobRow, a: AssignmentRow, sha: string): Promise<After> {
+    const { rows } = await c.query<{ id: string; owner_user_id: string | null; output: unknown }>(
+      `SELECT x.id, w.owner_user_id, x.output FROM job_assignments x JOIN workers w ON w.id = x.worker_id
+        WHERE x.job_id = $1 AND x.status = 'completed' ORDER BY x.attempt`,
+      [job.id],
+    );
+    const v = verdict(
+      job.type,
+      rows.map((r) => ({ assignmentId: r.id, ownerId: r.owner_user_id, output: r.output })),
+    );
+    const base = { jobId: job.id, workerId: a.worker_id, assignmentId: a.id };
+    if (v.kind === 'agreed') {
+      await c.query(`UPDATE job_assignments SET verdict = 'agreed' WHERE id = ANY($1::uuid[])`, [v.agreed]);
+      if (v.disagreed.length)
+        await c.query(`UPDATE job_assignments SET verdict = 'disagreed' WHERE id = ANY($1::uuid[])`, [v.disagreed]);
+      const win = rows.find((r) => r.id === v.winner)!;
+      const winSha = sha256Hex(JSON.stringify(win.output));
+      await this.finishCompleted(c, job, win.output, winSha);
+      await event(c, job.id, a.id, a.worker_id, 'job.completed', {
+        attempt: a.attempt,
+        outputSha256: winSha,
+        verification: { agreed: v.agreed, disagreed: v.disagreed },
+      });
+      await settleJob(c, job.id);
+      return { ...base, status: 'COMPLETED' };
+    }
+    if (v.kind === 'mismatch') {
+      await c.query(`UPDATE job_assignments SET verdict = 'disagreed' WHERE id = ANY($1::uuid[])`, [v.disagreed]);
+      const err = { code: 'RESULT_MISMATCH', message: `${rows.length} replicas from different computers disagreed` };
+      await c.query(`UPDATE jobs SET status = 'FAILED', error = $2, finished_at = now(), updated_at = now() WHERE id = $1`, [
+        job.id,
+        err,
+      ]);
+      await event(c, job.id, a.id, a.worker_id, 'job.failed', err);
+      await settleJob(c, job.id);
+      return { ...base, status: 'FAILED' };
+    }
+    // Needs another opinion: back to the queue, excluding the owners already heard.
+    await c.query(
+      `UPDATE jobs SET status = 'QUEUED', worker_id = NULL, assigned_at = NULL, progress = 0, stage = 'verifying',
+                       checkpoint = NULL, updated_at = now() WHERE id = $1`,
+      [job.id],
+    );
+    await event(c, job.id, a.id, a.worker_id, 'job.replica', { replicas: rows.length, outputSha256: sha });
+    return { ...base, status: 'QUEUED', requeue: { priority: job.priority, createdAt: job.created_at }, extra: { replica: rows.length } };
   }
 
   async reject(workerId: string, assignmentId: string, reason: string) {
@@ -472,9 +531,23 @@ export class JobLifecycle {
 
   /** Ends an attempt and applies the retry policy. Caller holds job + assignment locks. */
   private async endAttempt(c: pg.PoolClient, job: JobRow, a: AssignmentRow, o: AttemptOutcome, error: string): Promise<After> {
-    await c.query(`UPDATE job_assignments SET status = $2, finished_at = now(), error = $3 WHERE id = $1`, [a.id, o.kind, error]);
+    await c.query(`UPDATE job_assignments SET status = $2, finished_at = now(), error = $3, retryable = $4 WHERE id = $1`, [
+      a.id,
+      o.kind,
+      error,
+      o.kind === 'failed' ? o.retryable : null,
+    ]);
     const failures = job.failures + (countsAsFailure(o.kind) ? 1 : 0);
-    const decision = this.policy.decide(o, failures, job.max_attempts);
+    let decision = this.policy.decide(o, failures, job.max_attempts);
+    // Verified jobs get a second opinion before "the job itself is bad" is believed: a
+    // provider could otherwise fail every job it dislikes at no cost.
+    if (decision === 'FAIL' && o.kind === 'failed' && !o.retryable && job.verification === 'replicate' && failures < job.max_attempts) {
+      const prev = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM job_assignments WHERE job_id = $1 AND id <> $2 AND status = 'failed' AND retryable = false`,
+        [job.id, a.id],
+      );
+      if (prev.rows[0]!.n === 0) decision = 'REQUEUE';
+    }
     const base = { jobId: job.id, workerId: a.worker_id, assignmentId: a.id };
     if (decision === 'REQUEUE') {
       await c.query(

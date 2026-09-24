@@ -47,6 +47,8 @@ export interface JobSpec {
   ownerId?: string;
   /** Credits (millicredits) still available for the next attempt; absent = no budget limit. */
   budgetRemaining?: number;
+  /** Owners whose computers already produced a replica of this job (verification). */
+  excludedOwners?: string[];
 }
 
 export interface WorkSize {
@@ -108,6 +110,8 @@ export interface WorkerSnapshot {
   performance?: PerformanceView | null;
   /** Provider's offer (price, availability, limits); absent = default offer. */
   offer?: Offer;
+  /** Account that owns the computer. */
+  ownerId?: string | null;
   /** Objective reputation; absent = computed from `recent` only. */
   reputation?: Reputation;
 }

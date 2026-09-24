@@ -5,6 +5,7 @@ import type { JobSpec, Placement, SchedulerMonitors, SchedulerStore, WorkerSnaps
 import { JobLifecycle } from './lifecycle.js';
 import { WorkerService } from '../modules/workers/service.js';
 import { normalizeOffer } from '../market/offer.js';
+import { owedSql } from '../credits/owed.js';
 import { loadReputations, type Reputation } from '../market/reputation.js';
 
 /** A worker that declined or timed out on a job is skipped for this long; failures are permanent per job. */
@@ -28,13 +29,11 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
     const { rows } = await this.ctx.db.query(
       `SELECT j.id, j.owner_id, j.type, j.priority, j.requirements, j.resources, j.created_at, j.timeout_seconds,
               COALESCE(x.workers, '{}') AS excluded,
-              -- Budget left after attempts already owed to providers (resumable timeouts).
-              j.budget - COALESCE((
-                SELECT sum(LEAST(ceil(p.price_rate * ceil(EXTRACT(EPOCH FROM p.finished_at - p.started_at)) / 60.0),
-                                 ceil(p.price_rate * j.timeout_seconds / 60.0)))
-                  FROM job_assignments p
-                 WHERE p.job_id = j.id AND p.status = 'timeout' AND j.retry_on_timeout
-                   AND p.price_rate IS NOT NULL AND p.started_at IS NOT NULL), 0) AS budget_remaining,
+              -- Budget left after attempts already owed to providers.
+              j.budget - ${owedSql('j')} AS budget_remaining,
+              CASE WHEN j.verification = 'replicate' THEN (
+                SELECT array_agg(DISTINCT w.owner_user_id) FROM job_assignments r JOIN workers w ON w.id = r.worker_id
+                 WHERE r.job_id = j.id AND r.status = 'completed' AND w.owner_user_id IS NOT NULL) END AS excluded_owners,
               CASE WHEN j.type = 'image-inference' THEN jsonb_build_object(
                 'items', jsonb_array_length(j.input->'images'),
                 'bytes', (SELECT COALESCE(sum((i->>'size')::bigint), 0) FROM jsonb_array_elements(j.input->'images') i),
@@ -43,7 +42,7 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
          LEFT JOIN LATERAL (
            SELECT array_agg(DISTINCT a.worker_id) AS workers FROM job_assignments a
             WHERE a.job_id = j.id
-              AND (a.status IN ('failed', 'lost', 'timeout')
+              AND (a.status IN ('failed', 'lost', 'timeout', 'completed')
                    OR (a.status IN ('rejected', 'expired') AND a.finished_at > now() - make_interval(secs => $2)))
          ) x ON true
         WHERE j.id = ANY($1::uuid[]) AND j.status = 'QUEUED'
@@ -65,13 +64,14 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
       timeoutSeconds: r.timeout_seconds,
       ownerId: r.owner_id,
       ...(r.budget_remaining !== null ? { budgetRemaining: Number(r.budget_remaining) } : {}),
+      ...(r.excluded_owners ? { excludedOwners: r.excluded_owners } : {}),
       ...(r.work ? { work: { items: r.work.items, bytes: Number(r.work.bytes), accelerator: r.work.accelerator } } : {}),
     }));
   }
 
   async workers(): Promise<WorkerSnapshot[]> {
     const { rows } = await this.ctx.db.query(
-      `SELECT w.id, w.name, w.online_since, w.state, w.last_seen_at, w.max_concurrent_tasks, w.workload_types, w.hardware, w.capacity, w.last_usage,
+      `SELECT w.id, w.name, w.owner_user_id, w.online_since, w.state, w.last_seen_at, w.max_concurrent_tasks, w.workload_types, w.hardware, w.capacity, w.last_usage,
               r.n, r.cpu, r.ram, r.gpu, r.vram, r.disk, h.completed, h.failed,
               p.profile, p.verified, p.observed,
               o.listed AS offer_listed, o.price AS offer_price, o.availability AS offer_availability, o.limits AS offer_limits
@@ -99,6 +99,7 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
+      ownerId: r.owner_user_id,
       onlineSince: r.online_since,
       state: r.state,
       lastSeenAt: r.last_seen_at,
