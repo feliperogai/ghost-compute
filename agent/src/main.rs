@@ -2,30 +2,25 @@ use std::{
     io::{BufRead, IsTerminal},
     path::PathBuf,
     process::ExitCode,
-    sync::Arc,
     time::Duration,
 };
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tokio::sync::watch;
-use tracing::{error, info, warn};
+use tracing::info;
 
 use ghost_agent::{
-    configuration::settings::SettingsStore,
     configuration::{Config, default_config_path},
-    execution, hardware,
-    monitoring::{Monitor, Sampler},
-    networking::{
-        ApiClient,
-        api::RegisterRequest,
-        client::AGENT_VERSION,
-        heartbeat::{Exit, HeartbeatLoop},
-    },
-    runtime::{AgentInfo, Shared},
-    scheduler::Policy,
-    security::{CredentialStore, Credentials, DeviceIdentity},
+    hardware,
+    monitoring::Sampler,
+    networking::ApiClient,
+    security::CredentialStore,
+    supervisor::supervise,
 };
+
+#[cfg(windows)]
+mod service;
 
 #[derive(Parser)]
 #[command(name = "ghost-agent", version, about = "ghost worker agent")]
@@ -41,15 +36,33 @@ struct Cli {
 enum Cmd {
     /// Register this device with the control plane (one-time enrollment token).
     Enroll {
-        /// Token from an administrator. Read from stdin if omitted (keeps it out of shell history).
+        /// ghe_… (connection code) or ghu_… (account token). Read from stdin if omitted
+        /// (keeps it out of shell history).
         #[arg(long, env = "GHOST_ENROLLMENT_TOKEN", hide_env_values = true)]
         token: Option<String>,
         /// Replace existing credentials.
         #[arg(long)]
         force: bool,
     },
-    /// Run the agent: monitoring + heartbeat.
+    /// Run the agent in the console (Ctrl+C stops it): waits to be connected, then works.
     Run,
+    /// Run as the Windows service "GhostWorker" (started by the Service Control Manager).
+    #[cfg(windows)]
+    Service,
+    /// Write agent.toml with the server address (used by the installer).
+    Configure {
+        #[arg(long)]
+        server_url: String,
+        /// Development only: plain HTTP to a loopback address.
+        #[arg(long)]
+        allow_insecure_localhost: bool,
+    },
+    /// Leave the platform and delete all local data (used by the uninstaller).
+    UninstallCleanup {
+        /// Keep credentials and settings (upgrades).
+        #[arg(long)]
+        keep_data: bool,
+    },
     /// Print the running agent's status (via local IPC) as JSON.
     Status,
     /// Start, pause or stop sharing on the running agent.
@@ -73,12 +86,14 @@ enum ControlArg {
     Stop,
 }
 
-// Distinct exit codes let the service manager decide whether to restart.
-const EXIT_INVALID_CREDENTIALS: u8 = 2;
-const EXIT_REVOKED: u8 = 3;
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // The service entry point must hand the thread to the Service Control Manager
+    // before anything else.
+    #[cfg(windows)]
+    if matches!(cli.cmd, Cmd::Service) {
+        return service::main(cli.config);
+    }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     match rt.block_on(dispatch(cli)) {
         Ok(code) => code,
@@ -122,6 +137,12 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Cmd::Enroll { token, force } => enroll(&load_config(cli.config)?, token, force).await,
         Cmd::Run => run(load_config(cli.config)?).await,
+        #[cfg(windows)]
+        Cmd::Service => unreachable!("handled before the runtime starts"),
+        Cmd::Configure { server_url, allow_insecure_localhost } => {
+            configure(cli.config, server_url, allow_insecure_localhost)
+        }
+        Cmd::UninstallCleanup { keep_data } => uninstall_cleanup(cli.config, keep_data).await,
     }
 }
 
@@ -138,153 +159,77 @@ fn load_config(path: Option<PathBuf>) -> anyhow::Result<Config> {
 
 async fn enroll(cfg: &Config, token: Option<String>, force: bool) -> anyhow::Result<ExitCode> {
     let _log = ghost_agent::logging::init(&cfg.agent.log_level, None)?;
-    let data_dir = cfg.data_dir();
-    let store = CredentialStore::new(&data_dir);
-    if store.load()?.is_some() && !force {
-        bail!("already enrolled ({}); use --force to replace", store.path().display());
-    }
     let token = match token {
         Some(t) => t,
         None => {
             if std::io::stdin().is_terminal() {
-                eprint!("enrollment token: ");
+                eprint!("token (ghe_… ou ghu_…): ");
             }
             let mut line = String::new();
             std::io::stdin().lock().read_line(&mut line)?;
             line.trim().to_string()
         }
     };
-    if !token.starts_with("ghe_") {
-        bail!("enrollment token must start with ghe_");
-    }
-
-    let identity = DeviceIdentity::load_or_create(&data_dir)?;
-    let hw = hardware::detect();
-    let name = cfg.display_name();
-    let client = ApiClient::new(&cfg.server, None)?;
-    let res = client
-        .register(&RegisterRequest {
-            enrollment_token: &token,
-            name: &name,
-            hardware: &hw,
-            max_concurrent_tasks: cfg.agent.max_concurrent_tasks,
-            agent_version: AGENT_VERSION,
-            device_id: identity.device_id,
-        })
-        .await
-        .context("registration failed")?;
-
-    let creds =
-        Credentials { server_url: cfg.server.url.clone(), worker_id: res.worker_id, worker_secret: res.worker_secret };
-    store.save(&creds)?;
-
-    // Prove the credentials work before declaring success.
-    ApiClient::new(&cfg.server, Some(creds))?.me().await.context("authentication check failed")?;
-    info!(worker_id = %res.worker_id, device_id = %identity.device_id, "enrolled");
-    println!("enrolled as worker {}", res.worker_id);
+    let id = ghost_agent::enrollment::enroll(cfg, &token, force).await?;
+    info!(worker_id = %id, "enrolled");
+    println!("enrolled as worker {id}");
     Ok(ExitCode::SUCCESS)
 }
 
+/// Console mode: same as the service, stopped with Ctrl+C.
 async fn run(cfg: Config) -> anyhow::Result<ExitCode> {
     let data_dir = cfg.data_dir();
     let _log = ghost_agent::logging::init(&cfg.agent.log_level, Some(&data_dir.join("logs")))?;
-    let store = CredentialStore::new(&data_dir);
-    let creds = store.load()?.context("not enrolled: run `ghost-agent enroll` first")?;
-    if creds.server_url != cfg.server.url {
-        bail!("credentials were issued by {} but config points to {}", creds.server_url, cfg.server.url);
-    }
-    let identity = DeviceIdentity::load_or_create(&data_dir)?;
-    let hw = hardware::detect();
-    info!(
-        version = AGENT_VERSION,
-        worker_id = %creds.worker_id,
-        device_id = %identity.device_id,
-        cpu = %hw.cpu.model,
-        threads = hw.cpu.threads,
-        ram_mb = hw.ram_mb,
-        gpus = hw.gpus.len(),
-        "agent starting"
-    );
-
-    let period = Duration::from_secs(cfg.agent.sample_interval_secs);
-    // ~30 s smoothing window.
-    let window = (30 / cfg.agent.sample_interval_secs).max(1) as usize;
-    let snapshots = Monitor::spawn(period, window);
-
-    let settings = SettingsStore::new(&data_dir);
-    let limits = settings.load_limits(&cfg.limits)?;
-    let control = settings.load_control();
-    info!(?control, "owner control restored");
-    let shared = Arc::new(Shared::new(
-        AgentInfo {
-            version: AGENT_VERSION.into(),
-            name: cfg.display_name(),
-            worker_id: creds.worker_id,
-            device_id: identity.device_id,
-            server_url: cfg.server.url.clone(),
-            execution_available: execution::AVAILABLE,
-        },
-        hw,
-        snapshots,
-        settings,
-        control,
-        limits.clone(),
-    ));
-
-    let ipc_endpoint = ghost_ipc::Endpoint::default_for(&data_dir);
-    let ipc_shared = shared.clone();
-    tokio::spawn(async move {
-        if let Err(e) = ghost_agent::ipc::run(ipc_shared, ipc_endpoint).await {
-            error!(error = %e, "IPC server failed; desktop app will not connect");
-        }
-    });
-
     let (shutdown_tx, shutdown) = watch::channel(false);
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
         info!("shutdown requested");
         let _ = shutdown_tx.send(true);
     });
+    supervise(cfg, shutdown).await?;
+    info!("stopped");
+    Ok(ExitCode::SUCCESS)
+}
 
-    let client = Arc::new(ApiClient::new(&cfg.server, Some(creds))?);
-    let sandbox_exe = ghost_agent::execution::sandbox::Sandbox::default_exe();
-    let executor = if execution::AVAILABLE && sandbox_exe.exists() {
-        let work = data_dir.join("sandbox");
-        // Leftovers from a crash: every run directory is disposable.
-        let _ = std::fs::remove_dir_all(&work);
-        info!(sandbox = %sandbox_exe.display(), types = ?execution::SUPPORTED_WORKLOAD_TYPES, "execution enabled");
-        Some(ghost_agent::execution::Executor::new(
-            client.clone(),
-            shared.clone(),
-            ghost_agent::execution::sandbox::Sandbox::new(sandbox_exe, work),
-            cfg.agent.max_concurrent_tasks as usize,
-        ))
-    } else {
-        warn!(sandbox = %sandbox_exe.display(), "sandbox binary not found; execution disabled");
-        None
-    };
-    let hb = HeartbeatLoop {
-        client,
-        policy: Policy::new(limits, executor.is_some()),
-        shared,
-        interval: Duration::from_secs(5),
-        executor,
-    };
-    Ok(match hb.run(shutdown).await {
-        Exit::Shutdown => {
-            info!("stopped");
-            ExitCode::SUCCESS
-        }
-        Exit::Revoked => {
-            error!("worker revoked by administrator; deleting credentials");
-            if let Err(e) = store.delete() {
-                warn!(error = %e, "could not delete credentials");
+/// Installer: writes (or updates) agent.toml with the server address. Nothing secret here.
+fn configure(path: Option<PathBuf>, server_url: String, allow_insecure_localhost: bool) -> anyhow::Result<ExitCode> {
+    let path = path.unwrap_or_else(default_config_path);
+    let cfg = ghost_agent::configuration::write_server_url(&path, &server_url, allow_insecure_localhost)?;
+    println!("configured {} (server {})", path.display(), cfg.server.url);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Uninstaller: tells the server this computer leaves (best effort), then deletes
+/// everything the agent wrote (credentials, identity, settings, logs, work files).
+async fn uninstall_cleanup(cfg_path: Option<PathBuf>, keep_data: bool) -> anyhow::Result<ExitCode> {
+    let path = cfg_path.unwrap_or_else(default_config_path);
+    let data_dir = match Config::load(&path) {
+        Ok(cfg) => {
+            match CredentialStore::new(&cfg.data_dir()).load() {
+                Ok(Some(creds)) => {
+                    let leave = async { ApiClient::new(&cfg.server, Some(creds))?.leave().await };
+                    match tokio::time::timeout(Duration::from_secs(15), leave).await {
+                        Ok(Ok(())) => println!("server notified: this computer left the platform"),
+                        Ok(Err(e)) => println!("could not notify the server ({e}); an administrator can revoke it"),
+                        Err(_) => println!("server did not answer in time; an administrator can revoke it"),
+                    }
+                }
+                Ok(None) => println!("not connected: nothing to tell the server"),
+                Err(e) => println!("credentials unreadable ({e}); skipping server notification"),
             }
-            ExitCode::from(EXIT_REVOKED)
+            cfg.data_dir()
         }
-        Exit::InvalidCredentials => {
-            error!("credentials rejected; re-enrollment required");
-            ExitCode::from(EXIT_INVALID_CREDENTIALS)
+        Err(_) => ghost_agent::configuration::default_data_dir(),
+    };
+    if keep_data {
+        println!("data kept at {}", data_dir.display());
+    } else {
+        match std::fs::remove_dir_all(&data_dir) {
+            Ok(()) => println!("removed {}", data_dir.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => println!("could not remove {}: {e}", data_dir.display()),
         }
-    })
+    }
+    // Never fail an uninstall.
+    Ok(ExitCode::SUCCESS)
 }

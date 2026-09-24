@@ -73,6 +73,15 @@ export const workerRoutes =
 
     app.get('/v1/worker/me', { onRequest: requireWorker(ctx) }, async (req) => svc.get(workerId(req)));
 
+    // The software is being uninstalled: the worker takes itself off the platform, its
+    // jobs are re-routed and its credentials stop working. Idempotent from the agent's
+    // point of view (a second call is refused as unauthenticated).
+    app.post('/v1/worker/me/leave', { onRequest: requireWorker(ctx) }, async (req) => {
+      const id = workerId(req);
+      await svc.revoke(id, 'removido do computador pelo dono (desinstalação)', id, 'worker');
+      return { workerId: id, status: 'revoked' };
+    });
+
     app.get(
       '/v1/worker/me/stats',
       {

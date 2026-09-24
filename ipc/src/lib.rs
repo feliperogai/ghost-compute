@@ -29,7 +29,13 @@ pub mod methods {
     pub const SETTINGS_SET: &str = "settings.set";
     /// User-session signals only the desktop app can see.
     pub const PRESENCE: &str = "presence.report";
+    /// `{ token }` (`ghe_…` or `ghu_…`) → `{ workerId }`. Connects this computer.
+    /// While not connected every other method except `hello` fails with `NOT_ENROLLED`.
+    pub const ENROLL: &str = "enroll";
 }
+
+/// Error code of every method (but `hello` and `enroll`) while the computer is not connected.
+pub const NOT_ENROLLED: &str = "NOT_ENROLLED";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Request {

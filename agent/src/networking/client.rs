@@ -125,6 +125,24 @@ impl ApiClient {
         self.send(Method::POST, "/v1/workers/register", Some(req), None).await
     }
 
+    /// Signing in with an account token (`ghu_…`): asks the server for a one-time
+    /// enrollment token for a computer owned by that account. The account token is used
+    /// for this single request and never stored.
+    pub async fn create_enrollment_token(
+        &self,
+        account_token: &SecretString,
+        note: &str,
+    ) -> Result<SecretString, ApiError> {
+        #[derive(serde::Deserialize)]
+        struct Res {
+            token: SecretString,
+        }
+        let body = serde_json::json!({ "ttlSeconds": 600, "note": note });
+        let r: Res =
+            self.send(Method::POST, "/v1/provider/enrollment-tokens", Some(&body), Some(account_token)).await?;
+        Ok(r.token)
+    }
+
     // ---- authenticated --------------------------------------------------------
 
     async fn authenticate(&self) -> Result<Token, ApiError> {
@@ -331,5 +349,10 @@ impl ApiClient {
 
     pub async fn me(&self) -> Result<serde_json::Value, ApiError> {
         self.call::<(), _>(Method::GET, "/v1/worker/me", None).await
+    }
+
+    /// Uninstall: the worker takes itself off the platform (its jobs move elsewhere).
+    pub async fn leave(&self) -> Result<(), ApiError> {
+        self.call::<(), serde_json::Value>(Method::POST, "/v1/worker/me/leave", None).await.map(|_| ())
     }
 }

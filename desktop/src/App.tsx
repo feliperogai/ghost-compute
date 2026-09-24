@@ -7,6 +7,7 @@ import { Hero } from './components/Hero';
 import { Resources, SidePanels } from './components/Overview';
 import { Jobs } from './components/Jobs';
 import { Settings } from './components/Settings';
+import { Connect } from './components/Connect';
 import { connectionText } from './text';
 
 function defaultApi(): AgentApi {
@@ -19,6 +20,9 @@ export function App({ api: injected }: { api?: AgentApi }) {
   const api = useMemo(() => injected ?? defaultApi(), [injected]);
   const agent = useAgent(api);
   const { status, error } = agent;
+
+  // Not connected yet: the agent runs but has no account; nothing is shared.
+  if (error?.code === 'NOT_ENROLLED') return <Connect api={api} reason={error.message} />;
 
   if (!status) {
     return error ? <Unreachable /> : <div className="app" aria-busy="true" />;
@@ -79,7 +83,8 @@ function Unreachable() {
           neste computador.
         </p>
         <p>
-          Para iniciar: abra <b>Serviços</b> do Windows e inicie <code>ghost-agent</code>, ou reinstale o ghost.
+          Para iniciar: abra <b>Serviços</b> do Windows e inicie <code>ghost Worker</code> (GhostWorker), ou
+          reinstale o ghost.
         </p>
         <p className="retry">
           <span className="dot bad" aria-hidden /> Tentando reconectar a cada segundo…

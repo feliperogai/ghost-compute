@@ -68,7 +68,7 @@ describe('overview', () => {
   it('real agent fixture renders without GPU or temperature data', async () => {
     const mock = new MockAgent('noagent');
     // Use the raw fixture path: status() of a non-failing clone.
-    const api: AgentApi = { ...mock, status: async () => (await import('./fixtures/status.agent.json')).default as never, control: mock.control.bind(mock), saveSettings: mock.saveSettings.bind(mock) };
+    const api: AgentApi = { ...mock, status: async () => (await import('./fixtures/status.agent.json')).default as never, control: mock.control.bind(mock), saveSettings: mock.saveSettings.bind(mock), enroll: mock.enroll.bind(mock) };
     await renderWith(api);
     expect(screen.getByTestId('meter-GPU')).toHaveTextContent('Nenhuma GPU detectada');
     expect(screen.getByTestId('meter-Temperatura')).toHaveTextContent('Sem sensor');
@@ -95,6 +95,7 @@ describe('agent unreachable', () => {
     const api: AgentApi = {
       status: () => (down ? Promise.reject(new AgentError('AGENT_UNREACHABLE', 'gone')) : mock.status()),
       control: (a) => mock.control(a),
+      enroll: (t) => mock.enroll(t),
       saveSettings: (l) => mock.saveSettings(l),
     };
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -121,6 +122,7 @@ describe('settings', () => {
     const api: AgentApi = {
       status: () => mock.status(),
       control: (a) => mock.control(a),
+      enroll: (t) => mock.enroll(t),
       saveSettings: async (l) => {
         saved.push(l);
         return mock.saveSettings(l);
@@ -175,6 +177,7 @@ describe('settings', () => {
     const api: AgentApi = {
       status: () => mock.status(),
       control: (a) => mock.control(a),
+      enroll: (t) => mock.enroll(t),
       saveSettings: () => Promise.reject(new AgentError('INVALID_SETTINGS', 'invalid config: limits.schedule: bad time')),
     };
     const user = await openSettings(api);
@@ -182,5 +185,36 @@ describe('settings', () => {
     await user.click(screen.getByRole('button', { name: 'Salvar' }));
     expect(await screen.findByText(/Não foi possível salvar: invalid config/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Salvar' })).toBeEnabled();
+  });
+});
+
+describe('connecting this computer', () => {
+  it('asks for a token while not connected; connecting does not start sharing', async () => {
+    const mock = new MockAgent('not-enrolled');
+    const user = userEvent.setup();
+    render(<App api={mock} />);
+    expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('Conectar este computador');
+    expect(screen.getByTestId('connect-reason')).toHaveTextContent('https://ghost.example.com');
+    expect(screen.getByText(/nada é compartilhado/)).toBeInTheDocument();
+    const input = screen.getByLabelText('Código de conexão ou token da conta');
+    expect(input).toHaveAttribute('type', 'password');
+    expect(screen.getByRole('button', { name: 'Conectar' })).toBeDisabled();
+
+    await user.type(input, 'senha123');
+    await user.click(screen.getByRole('button', { name: 'Conectar' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('o token deve começar com ghe_');
+
+    await user.clear(input);
+    await user.type(input, 'ghe_used');
+    await user.click(screen.getByRole('button', { name: 'Conectar' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('já usado');
+
+    await user.clear(input);
+    await user.type(input, 'ghe_good');
+    await user.click(screen.getByRole('button', { name: 'Conectar' }));
+    expect(mock.calls.filter((c) => c === 'enroll')).toHaveLength(3);
+    // Once connected the normal panel appears — with sharing still off.
+    expect(await screen.findByRole('heading', { level: 1, name: /Compartilhamento desligado/ }, { timeout: 3000 })).toBeInTheDocument();
+    expect(mock.calls).not.toContain('control:start');
   });
 });

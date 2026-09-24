@@ -122,7 +122,7 @@ export class WorkerService {
     };
   }
 
-  async revoke(workerId: string, reason: string, actorId: string) {
+  async revoke(workerId: string, reason: string, actorId: string, actorType: 'user' | 'worker' = 'user') {
     const worker = await withTx(this.ctx.db, async (c) => {
       const cur = await c.query(`SELECT status FROM workers WHERE id = $1 FOR UPDATE`, [workerId]);
       if (!cur.rows[0]) throw notFound('Worker');
@@ -133,7 +133,7 @@ export class WorkerService {
         [workerId, reason],
       );
       await audit(c, {
-        actorType: 'user',
+        actorType,
         actorId,
         action: 'worker.revoke',
         targetType: 'worker',

@@ -56,8 +56,88 @@ fn parse<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, RemoteError> {
     serde_json::from_value(v).map_err(|e| RemoteError::bad_request(e.to_string()))
 }
 
+/// What the IPC endpoint serves: the same endpoint for the whole life of the service,
+/// first "not connected" (only `hello` and `enroll`), then the running agent.
+pub struct Hub {
+    cfg: crate::configuration::Config,
+    running: std::sync::RwLock<Option<Arc<Shared>>>,
+    last_error: std::sync::Mutex<Option<String>>,
+    /// Signalled when `enroll` succeeds.
+    pub enrolled: tokio::sync::Notify,
+}
+
+impl Hub {
+    pub fn new(cfg: crate::configuration::Config) -> Self {
+        Self {
+            cfg,
+            running: std::sync::RwLock::new(None),
+            last_error: std::sync::Mutex::new(None),
+            enrolled: tokio::sync::Notify::new(),
+        }
+    }
+
+    pub fn set_running(&self, shared: Option<Arc<Shared>>) {
+        *self.running.write().expect("hub lock") = shared;
+    }
+
+    /// Why the computer is not connected (shown by the desktop app).
+    pub fn set_error(&self, e: Option<String>) {
+        *self.last_error.lock().expect("hub lock") = e;
+    }
+
+    fn running(&self) -> Option<Arc<Shared>> {
+        self.running.read().expect("hub lock").clone()
+    }
+
+    pub async fn dispatch(&self, method: &str, params: Value) -> Result<Value, RemoteError> {
+        if let Some(shared) = self.running() {
+            if method == methods::ENROLL {
+                return Err(RemoteError::new("ALREADY_ENROLLED", "este computador já está conectado"));
+            }
+            return handle(&shared, method, params).await;
+        }
+        match method {
+            methods::HELLO => Ok(
+                json!({ "version": crate::networking::client::AGENT_VERSION, "protocol": PROTOCOL_VERSION, "enrolled": false }),
+            ),
+            methods::ENROLL => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct P {
+                    token: crate::security::SecretString,
+                }
+                let p: P = parse(params)?;
+                match crate::enrollment::enroll(&self.cfg, p.token.expose(), false).await {
+                    Ok(id) => {
+                        info!(worker_id = %id, "enrolled from the desktop app");
+                        self.set_error(None);
+                        self.enrolled.notify_one();
+                        Ok(json!({ "workerId": id }))
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "enrollment from the desktop app failed");
+                        Err(RemoteError::new(e.code(), e.to_string()))
+                    }
+                }
+            }
+            _ => {
+                let why = self.last_error.lock().expect("hub lock").clone();
+                Err(RemoteError::new(
+                    ghost_ipc::NOT_ENROLLED,
+                    match why {
+                        Some(w) => {
+                            format!("computador não conectado ao ghost ({w}) — servidor {}", self.cfg.server.url)
+                        }
+                        None => format!("computador não conectado ao ghost — servidor {}", self.cfg.server.url),
+                    },
+                ))
+            }
+        }
+    }
+}
+
 /// Accept loop. Runs until the process exits.
-pub async fn run(shared: Arc<Shared>, endpoint: Endpoint) -> std::io::Result<()> {
+pub async fn run(hub: Arc<Hub>, endpoint: Endpoint) -> std::io::Result<()> {
     let mut listener = Listener::bind(&endpoint)?;
     info!(endpoint = ?endpoint, "IPC listening");
     loop {
@@ -69,11 +149,11 @@ pub async fn run(shared: Arc<Shared>, endpoint: Endpoint) -> std::io::Result<()>
                 continue;
             }
         };
-        let shared = shared.clone();
+        let hub = hub.clone();
         tokio::spawn(async move {
             let res = serve(stream, |m: String, p: Value| {
-                let shared = shared.clone();
-                async move { handle(&shared, &m, p).await }
+                let hub = hub.clone();
+                async move { hub.dispatch(&m, p).await }
             })
             .await;
             if let Err(e) = res {
