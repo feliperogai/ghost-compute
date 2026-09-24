@@ -16,6 +16,7 @@ export type Reason =
   | { reason: 'owner_cpu_busy'; percent: number; limit: number }
   | { reason: 'ram_pressure'; percent: number; limit: number }
   | { reason: 'owner_active'; idle_secs: number; required: number }
+  | { reason: 'presence_unknown' }
   | { reason: 'session_unlocked' }
   | { reason: 'game_running' }
   | { reason: 'priority_app_running'; app: string }

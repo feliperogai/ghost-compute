@@ -1,0 +1,68 @@
+name: installer
+
+# Builds the Windows installer and proves it on a clean Windows machine: silent install,
+# every change checked, uninstall, nothing left behind (installer/windows/test-install.ps1).
+on:
+  push:
+    paths: ["agent/**", "ipc/**", "desktop/**", "installer/**", "workloads/**", ".github/workflows/installer.yml"]
+  pull_request:
+    paths: ["agent/**", "ipc/**", "desktop/**", "installer/**", "workloads/**", ".github/workflows/installer.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      VERSION: 0.1.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            agent
+            desktop/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build agent (release; toolchain pinned by agent/rust-toolchain.toml)
+        working-directory: agent
+        run: cargo build --release --bins
+
+      - name: Build desktop app (no Tauri bundle; the Worker installer ships it)
+        working-directory: desktop
+        run: |
+          npm ci
+          npx tauri build --no-bundle
+
+      - name: Build MSI and setup
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem desktop/src-tauri/target/release -Filter *.exe | Where-Object Name -in 'ghost.exe', 'ghost-desktop.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'desktop exe not found' }
+          ./installer/windows/build.ps1 -Version $env:VERSION -BinDir (Resolve-Path agent/target/release) -DesktopExe $exe.FullName
+
+      - name: Install, check, uninstall, check
+        shell: pwsh
+        run: ./installer/windows/test-install.ps1 -Msi (Resolve-Path "installer/windows/out/ghost-worker-$env:VERSION.msi")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghost-worker-installer
+          path: |
+            installer/windows/out/*.msi
+            installer/windows/out/*.exe
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-logs
+          path: installer/windows/out/*.log

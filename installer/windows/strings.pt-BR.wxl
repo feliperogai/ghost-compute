@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Our texts (the standard WixUI pages use WiX's own pt-BR translation). -->
+<WixLocalization Culture="pt-BR" Codepage="1252" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+  <String Id="PackageDescription" Value="ghost Worker: empresta CPU e GPU ociosas deste computador à rede ghost, somente quando você permite." />
+  <String Id="ArpComments" Value="Compartilha CPU/GPU ociosas somente quando você permite. Pausar: ícone do ghost perto do relógio. Detalhes: Menu Iniciar &gt; ghost &gt; Como o ghost funciona." />
+  <String Id="Downgrade" Value="Uma versão mais nova do ghost Worker já está instalada." />
+  <String Id="Need64" Value="O ghost Worker precisa do Windows de 64 bits." />
+  <String Id="NeedWindows10" Value="O ghost Worker precisa do Windows 10 ou mais novo." />
+  <String Id="ServiceDescription" Value="Compartilha CPU/GPU ociosas com a rede ghost somente depois que você clicar em Iniciar no app ghost, e só com o computador parado. Pausar: app ghost (ícone perto do relógio). Desativar: pare este serviço." />
+  <String Id="ShortcutAppDescription" Value="Painel deste computador: o que o ghost está fazendo, Iniciar, Pausar, Parar e limites." />
+  <String Id="ShortcutHowDescription" Value="Recursos usados, quando o computador pode executar trabalhos, como pausar e como remover." />
+  <String Id="ShortcutUninstallDescription" Value="Remove o ghost Worker e todos os seus dados deste computador." />
+  <String Id="FirewallRuleDescription" Value="Criada pelo ghost Worker: proíbe o processo que executa os trabalhos de usar a rede. Removida ao desinstalar." />
+
+  <String Id="DialogTitle" Value="Instalação do ghost Worker" />
+
+  <String Id="HowItWorksTitle" Value="{\WixUI_Font_Title}Como o ghost funciona neste computador" />
+  <String Id="HowItWorksDescription" Value="Leia antes de instalar: recursos, quando roda, como pausar e como remover." />
+  <String Id="HowItWorksUnderstood" Value="Li e entendi o que o ghost faz neste computador" />
+
+  <String Id="ConnectTitle" Value="{\WixUI_Font_Title}Conectar e opções" />
+  <String Id="ConnectDescription" Value="Tudo aqui pode ser feito ou mudado depois, no app ghost." />
+  <String Id="ConnectIntro" Value="Conectar liga este computador à sua conta. Isso NÃO liga o compartilhamento: nada roda até você clicar em &quot;Iniciar compartilhamento&quot; no app." />
+  <String Id="ConnectServerLabel" Value="Endereço do servidor (https://):" />
+  <String Id="ConnectTokenLabel" Value="Código de conexão (opcional, ghe_…). Gere no site: Meus computadores &gt; Adicionar computador." />
+  <String Id="ConnectTokenHelp" Value="Sem código: conecte depois pelo app ghost, com o código ou com o token da sua conta. O código vale uma vez." />
+  <String Id="ConnectAutostart" Value="Abrir o app ghost perto do relógio ao entrar no Windows (recomendado: sem ele o ghost não sabe se você está usando o computador e não compartilha)" />
+  <String Id="ConnectDesktopShortcut" Value="Criar atalho do painel (app ghost) na Área de Trabalho" />
+  <String Id="ConnectFirewall" Value="Proibir o acesso à rede do processo que executa os trabalhos (regra do Firewall do Windows)" />
+  <String Id="InvalidServer" Value="O endereço do servidor precisa começar com https:// (conexão segura)." />
+  <String Id="InvalidToken" Value="O código de conexão começa com ghe_. Deixe em branco para conectar depois pelo app." />
+
+  <String Id="RemoveTitle" Value="{\WixUI_Font_Title}O que a remoção faz" />
+  <String Id="RemoveDescription" Value="Nada fica para trás." />
+  <String Id="RemoveBody" Value="Ao continuar, o desinstalador:&#13;&#10;&#13;&#10;• avisa o servidor que este computador saiu da plataforma (nenhum trabalho novo é enviado para ele; um trabalho em andamento vai para outro computador);&#13;&#10;• para e remove o serviço ghost Worker;&#13;&#10;• apaga C:\ProgramData\ghost inteira: configuração, credenciais, limites e registros;&#13;&#10;• remove a regra de firewall do ghost, os atalhos e a abertura automática do app;&#13;&#10;• apaga os programas em C:\Program Files\ghost.&#13;&#10;&#13;&#10;Créditos já recebidos continuam na sua conta. Para voltar, basta instalar de novo e conectar." />
+
+  <String Id="ExitLaunchApp" Value="Abrir o ghost agora" />
+  <String Id="ExitText" Value="Instalado. O compartilhamento está DESLIGADO: nada roda até você abrir o app ghost, conectar (se ainda não conectou) e clicar em Iniciar. Para pausar a qualquer momento: ícone do ghost perto do relógio." />
+</WixLocalization>
