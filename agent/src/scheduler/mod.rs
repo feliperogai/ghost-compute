@@ -31,17 +31,33 @@ pub enum Reason {
     StoppedByOwner,
     OutsideSchedule,
     OnBattery,
-    TooHot { celsius: f32, limit: f32 },
-    OwnerCpuBusy { percent: f32, limit: f32 },
-    RamPressure { percent: f32, limit: f32 },
-    OwnerActive { idle_secs: u64, required: u64 },
+    TooHot {
+        celsius: f32,
+        limit: f32,
+    },
+    OwnerCpuBusy {
+        percent: f32,
+        limit: f32,
+    },
+    RamPressure {
+        percent: f32,
+        limit: f32,
+    },
+    OwnerActive {
+        idle_secs: u64,
+        required: u64,
+    },
     /// Idle time is required but nobody reports it (the service cannot see input; the
     /// desktop app in the owner's session does). Unknown never counts as "away".
     PresenceUnknown,
     SessionUnlocked,
     GameRunning,
-    PriorityAppRunning { app: String },
-    CoolingDown { remaining_secs: u64 },
+    PriorityAppRunning {
+        app: String,
+    },
+    CoolingDown {
+        remaining_secs: u64,
+    },
     ExecutionUnavailable,
     NoData,
 }
