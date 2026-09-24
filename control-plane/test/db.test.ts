@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createPool } from '../src/db/pool.js';
 import { migrate } from '../src/db/migrate.js';
@@ -18,6 +19,24 @@ describe('config', () => {
       /WORKER_TOKEN_SECRET/,
     );
   });
+});
+
+describe('create-admin CLI (first step of the install guide)', () => {
+  it('creates an admin with a token and the welcome credits', async () => {
+    const email = `cli-${Date.now()}@example.com`;
+    const out = execFileSync(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'src/cli/create-admin.ts', email], {
+      env: { ...process.env, CREDITS_INITIAL_GRANT: '250' },
+      encoding: 'utf8',
+    });
+    expect(out).toMatch(/api token \(shown once\): ghu_\S+/);
+    const { rows } = await db.query<{ role: string; balance: string }>(
+      `SELECT u.role, COALESCE(SUM(e.amount), 0) AS balance
+         FROM users u JOIN credit_wallets w ON w.user_id = u.id LEFT JOIN credit_entries e ON e.wallet_id = w.id
+        WHERE u.email = $1 GROUP BY u.role`,
+      [email],
+    );
+    expect(rows).toEqual([{ role: 'admin', balance: String(250 * 1000) }]);
+  }, 60_000);
 });
 
 describe('migrations', () => {

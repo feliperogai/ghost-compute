@@ -9,9 +9,17 @@ import { createUserWithToken } from '../modules/admin/service.js';
 import type { AppContext } from '../context.js';
 
 const email = z.email().safeParse(process.argv[2]);
+// Same rule as the server's config (only this value is needed here, not the whole config).
+const grant = z.coerce
+  .number()
+  .int()
+  .min(0)
+  .max(1_000_000_000)
+  .default(1000)
+  .safeParse(process.env.CREDITS_INITIAL_GRANT);
 const url = process.env.DATABASE_URL;
-if (!email.success || !url) {
-  console.error('Usage: DATABASE_URL=... create-admin <email>');
+if (!email.success || !url || !grant.success) {
+  console.error('Usage: DATABASE_URL=... [CREDITS_INITIAL_GRANT=1000] create-admin <email>');
   process.exit(1);
 }
 const db = createPool(url);
@@ -21,6 +29,7 @@ try {
     { db } as AppContext,
     { email: email.data, role: 'admin', tokenName: 'bootstrap' },
     null,
+    grant.data,
   );
   console.log(`admin user: ${userId}\napi token (shown once): ${token}`);
 } catch (err) {
