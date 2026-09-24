@@ -1,5 +1,7 @@
 # ADR 002 — Modelo de Job e scheduler plugável
 
+> Atualização: o score padrão agora é o do [ADR 006](006-explainable-scoring.md) (explicável, com registro de cada decisão).
+
 **Status:** aceito. Substitui o modelo "job → tasks → leases" do MVP inicial.
 
 ## Decisão

@@ -100,6 +100,8 @@ for _ in $(seq 60); do
 done
 [ "$ST" = COMPLETED ] || fail "benchmark job ended $ST: $J"
 [ "$(echo "$J" | json .output.checksum)" = "00000000000132a2" ] || fail "wrong checksum: $J"  # 78498 = 0x132a2 primes ≤ 1e6
+echo "$J" | json .placementReason | grep -q "foi escolhido porque" || fail "no placement explanation: $J"
+echo "decision: $(echo "$J" | json .placementReason)"
 echo "benchmark: $(echo "$J" | json '.output.opsPerSecond') numbers/s, module $(echo "$J" | json '.output.runtime.moduleSha256' | cut -c1-12)…"
 
 echo "== image inference: dataset → batches → workers → combined result"

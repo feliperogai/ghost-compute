@@ -18,7 +18,7 @@ const envSchema = z.object({
   /** A running assignment not reported by heartbeat/progress for this long is considered lost. */
   ASSIGNMENT_STALE_SECONDS: z.coerce.number().int().min(10).max(3600).default(45),
   /** Placement algorithm (see src/scheduler/strategies). */
-  SCHEDULER_STRATEGY: z.string().default('weighted'),
+  SCHEDULER_STRATEGY: z.string().default('score'),
   /** Queued jobs considered per scheduling pass. */
   SCHEDULER_BATCH: z.coerce.number().int().min(1).max(5000).default(200),
   /** Do not place new work on workers within this many °C of their owner's limit. */

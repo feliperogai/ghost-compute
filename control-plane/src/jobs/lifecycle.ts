@@ -133,7 +133,20 @@ export class JobLifecycle {
                          updated_at = now() WHERE id = $1`,
         [job.id, p.workerId],
       );
-      await event(c, job.id, row.id, p.workerId, 'job.assigned', { attempt: row.attempt, score: p.score, strategy });
+      // Every decision is recorded with its reason (strategies without one get a plain note).
+      const summary =
+        p.explanation?.summary ?? `Worker ${p.workerId.slice(0, 8)} escolhido pela estratégia ${strategy} (score ${p.score.total}).`;
+      await c.query(
+        `INSERT INTO scheduler_decisions (job_id, assignment_id, worker_id, strategy, score, summary, explanation)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [job.id, row.id, p.workerId, strategy, p.score.total, summary, p.explanation ?? { score: p.score }],
+      );
+      await event(c, job.id, row.id, p.workerId, 'job.assigned', {
+        attempt: row.attempt,
+        score: { total: p.score.total, components: p.score.components },
+        strategy,
+        reason: summary,
+      });
       return {
         assignmentId: row.id,
         jobId: job.id,
