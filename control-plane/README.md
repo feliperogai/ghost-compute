@@ -68,13 +68,15 @@ Estados: `QUEUED → ASSIGNED → RUNNING → COMPLETED | FAILED | TIMEOUT`, e `
 | Worker (registro) | Token de enrollment `ghe_…` de uso único, gerado por admin, com TTL. |
 | Worker (sessão) | `POST /v1/workers/auth` com `workerId` + `workerSecret` (`ghw_…`) → token HMAC `v1.…` de curta duração. Revogação checada em toda requisição. |
 
-Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
+Rate limit global por credencial (ou IP) em toda a API, `RATE_LIMIT_PER_MINUTE`; rotas de credenciais e cadastro têm limites mais baixos. Atrás de proxy, defina `TRUST_PROXY` (senão `X-Forwarded-For` é ignorado) e `REQUIRE_TLS=true`. Controles e checklist de implantação: [docs/security/AUDIT.md](../docs/security/AUDIT.md).
 
 ## Endpoints
 
 | Método | Rota | Quem | Função |
 |---|---|---|---|
 | POST | `/v1/signup` | — | conta pública `member` + token (limite por IP; `OPEN_SIGNUP`, `SIGNUP_CREDITS`) — [ADR 008](../docs/adr/008-open-platform.md) |
+| GET | `/v1/me` · `/v1/me/tokens` | member | conta; tokens (validade, último uso) |
+| POST · DELETE | `/v1/me/tokens` · `/v1/me/tokens/:id` | member | criar token (validade máxima `MEMBER_TOKEN_TTL_DAYS`) · revogar |
 | POST | `/v1/admin/users` | admin | cria usuário + token |
 | POST | `/v1/admin/enrollment-tokens` | admin | token de registro de Worker |
 | POST | `/v1/workers/register` | enrollment token | 1. registrar Worker |
@@ -83,7 +85,7 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 | GET | `/v1/workers` | viewer | 4. listar (`status`, `state`, `limit`, `offset`) |
 | GET | `/v1/workers/:id` | viewer | 5. status + atribuições ativas |
 | GET | `/v1/workload-types` | viewer | catálogo de tipos de workload |
-| POST | `/v1/jobs` | member | criar Job (`type, requirements` + `minReputation`, `resources, priority, timeout, maxAttempts, budget, input`) |
+| POST | `/v1/jobs` | member | criar Job (`type, requirements` + `minReputation`, `resources, priority, timeout, maxAttempts, budget, verification, input`); `verification: replicate` (padrão de contas públicas) exige resultados iguais de donos e redes diferentes |
 | GET | `/v1/jobs/:id` | viewer | Job completo + histórico de tentativas (score, motivo) |
 | GET | `/v1/jobs/:id/events` | viewer | trilha de eventos |
 | GET | `/v1/jobs/:id/decisions` | viewer | por que cada tentativa foi para cada worker ("Worker X foi escolhido porque...", termos, pesos, segundo colocado) — [ADR 006](../docs/adr/006-explainable-scoring.md) |
@@ -108,6 +110,7 @@ Endpoints de credenciais têm rate limit (20/min por IP, via Redis).
 | POST | `/v1/provider/enrollment-tokens` | member | token para registrar um computador próprio |
 | GET | `/v1/provider/workers` | member | meus computadores: estado, oferta, reputação, saldo |
 | GET · PUT | `/v1/provider/workers/:id/offer` | dono | preço (créditos/min por recurso), disponibilidade (janelas no fuso), limites, `listed` |
+| POST | `/v1/provider/workers/:id/revoke` | dono | tirar um computador da plataforma (roubado/comprometido) |
 | GET | `/v1/market/offers` | member | mercado: hardware, preço, janelas, limites, reputação (`type`, `gpu`, `availableNow`) |
 | GET | `/v1/market/workers/:id/reputation` | member | reputação com métricas (concluídos, falhas, uptime, resposta) |
 | POST | `/v1/market/quote` | member | quem aceitaria o job e o custo máximo, pelas regras do scheduler |

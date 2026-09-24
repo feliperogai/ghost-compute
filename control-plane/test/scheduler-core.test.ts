@@ -156,3 +156,15 @@ describe('retry policy', () => {
     expect(p.decide({ kind: 'failed', retryable: false }, 1, 3)).toBe('FAIL');
   });
 });
+
+describe('GPU isolation between customers', () => {
+  it('never places two GPU jobs on one GPU at the same time (VRAM is not shared between jobs)', async () => {
+    const { scoreStrategy } = await import('../src/scheduler/strategies/score.js');
+    const w = gpuWorker('g1', { maxConcurrent: 4 });
+    const gpuJob = (id: string) => job(id, { resources: { cpuCores: 1, ramMb: 512, gpu: true, vramMb: 1024, diskMb: 0 } });
+    const r = scoreStrategy().place([gpuJob('a'), gpuJob('b')], [w], opts);
+    expect(r.placements.map((p) => p.jobId)).toEqual(['a']);
+    expect(r.unplaced).toEqual([{ jobId: 'b', reasons: { NO_GPU: 1 } }]);
+    expect(ineligibility(gpuJob('c'), { ...w, reserved: { ...zeroResources(), gpu: true }, activeAssignments: 1 }, opts)).toBe('NO_GPU');
+  });
+});

@@ -49,6 +49,10 @@ export interface JobSpec {
   budgetRemaining?: number;
   /** Owners whose computers already produced a replica of this job (verification). */
   excludedOwners?: string[];
+  /** Networks (/24, /48) replicas already came from. */
+  excludedNetworks?: string[];
+  /** The next replica must run on a trusted (staff-owned) computer. */
+  needsTrusted?: boolean;
 }
 
 export interface WorkSize {
@@ -112,6 +116,10 @@ export interface WorkerSnapshot {
   offer?: Offer;
   /** Account that owns the computer. */
   ownerId?: string | null;
+  /** Network prefix it connects from (null: unknown/loopback). */
+  network?: string | null;
+  /** Owned by platform staff: its replicas decide verified jobs. */
+  trusted?: boolean;
   /** Objective reputation; absent = computed from `recent` only. */
   reputation?: Reputation;
 }
@@ -139,7 +147,8 @@ export type IneligibleReason =
   | 'OUTSIDE_AVAILABILITY'
   | 'PROVIDER_LIMITS'
   | 'OVER_BUDGET'
-  | 'LOW_REPUTATION';
+  | 'LOW_REPUTATION'
+  | 'UNTRUSTED_VERIFIER';
 
 export interface ScoreTerm {
   /** Normalized to [0, 1]. */

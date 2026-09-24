@@ -6,6 +6,7 @@ import { JobLifecycle } from './lifecycle.js';
 import { WorkerService } from '../modules/workers/service.js';
 import { normalizeOffer } from '../market/offer.js';
 import { owedSql } from '../credits/owed.js';
+import { networkPrefix } from './network.js';
 import { loadReputations, type Reputation } from '../market/reputation.js';
 
 /** A worker that declined or timed out on a job is skipped for this long; failures are permanent per job. */
@@ -32,8 +33,13 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
               -- Budget left after attempts already owed to providers.
               j.budget - ${owedSql('j')} AS budget_remaining,
               CASE WHEN j.verification = 'replicate' THEN (
-                SELECT array_agg(DISTINCT w.owner_user_id) FROM job_assignments r JOIN workers w ON w.id = r.worker_id
-                 WHERE r.job_id = j.id AND r.status = 'completed' AND w.owner_user_id IS NOT NULL) END AS excluded_owners,
+                SELECT jsonb_build_object(
+                         'owners', COALESCE(jsonb_agg(DISTINCT w.owner_user_id) FILTER (WHERE w.owner_user_id IS NOT NULL), '[]'),
+                         'ips', COALESCE(jsonb_agg(DISTINCT w.last_ip) FILTER (WHERE w.last_ip IS NOT NULL), '[]'),
+                         'count', count(*),
+                         'trusted', COALESCE(bool_or(u.role IN ('admin', 'operator')), false))
+                  FROM job_assignments r JOIN workers w ON w.id = r.worker_id LEFT JOIN users u ON u.id = w.owner_user_id
+                 WHERE r.job_id = j.id AND r.status = 'completed') END AS replicas,
               CASE WHEN j.type = 'image-inference' THEN jsonb_build_object(
                 'items', jsonb_array_length(j.input->'images'),
                 'bytes', (SELECT COALESCE(sum((i->>'size')::bigint), 0) FROM jsonb_array_elements(j.input->'images') i),
@@ -64,20 +70,21 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
       timeoutSeconds: r.timeout_seconds,
       ownerId: r.owner_id,
       ...(r.budget_remaining !== null ? { budgetRemaining: Number(r.budget_remaining) } : {}),
-      ...(r.excluded_owners ? { excludedOwners: r.excluded_owners } : {}),
+      ...(r.replicas ? this.replicaConstraints(r.replicas) : {}),
       ...(r.work ? { work: { items: r.work.items, bytes: Number(r.work.bytes), accelerator: r.work.accelerator } } : {}),
     }));
   }
 
   async workers(): Promise<WorkerSnapshot[]> {
     const { rows } = await this.ctx.db.query(
-      `SELECT w.id, w.name, w.owner_user_id, w.online_since, w.state, w.last_seen_at, w.max_concurrent_tasks, w.workload_types, w.hardware, w.capacity, w.last_usage,
+      `SELECT w.id, w.name, w.owner_user_id, w.last_ip, (u.role IN ('admin', 'operator')) AS trusted, w.online_since, w.state, w.last_seen_at, w.max_concurrent_tasks, w.workload_types, w.hardware, w.capacity, w.last_usage,
               r.n, r.cpu, r.ram, r.gpu, r.vram, r.disk, h.completed, h.failed,
               p.profile, p.verified, p.observed,
               o.listed AS offer_listed, o.price AS offer_price, o.availability AS offer_availability, o.limits AS offer_limits
          FROM workers w
          LEFT JOIN worker_performance p ON p.worker_id = w.id
          LEFT JOIN worker_offers o ON o.worker_id = w.id
+         LEFT JOIN users u ON u.id = w.owner_user_id
          LEFT JOIN LATERAL (
            SELECT count(*)::int AS n,
                   COALESCE(sum((a.reserved->>'cpuCores')::float), 0) AS cpu,
@@ -100,6 +107,8 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
       id: r.id,
       name: r.name,
       ownerId: r.owner_user_id,
+      network: networkPrefix(r.last_ip),
+      trusted: r.trusted === true,
       onlineSince: r.online_since,
       state: r.state,
       lastSeenAt: r.last_seen_at,
@@ -119,6 +128,15 @@ export class PgSchedulerStore implements SchedulerStore, SchedulerMonitors {
       ),
       ...(reputation.has(r.id) ? { reputation: reputation.get(r.id)! } : {}),
     }));
+  }
+
+  /** Where the next replica of a verified job may run. */
+  private replicaConstraints(r: { owners: string[]; ips: string[]; count: number; trusted: boolean }) {
+    return {
+      excludedOwners: r.owners,
+      excludedNetworks: r.ips.map(networkPrefix).filter((n): n is string => n !== null),
+      needsTrusted: this.ctx.config.REQUIRE_TRUSTED_REPLICA && r.count > 0 && !r.trusted,
+    };
   }
 
   private async reputations() {

@@ -46,6 +46,9 @@ export function ineligibility(job: JobSpec, w: WorkerSnapshot, o: EligibilityOpt
   if (job.excludedWorkers.includes(w.id)) return 'EXCLUDED';
   // Replicas must come from different people: one owner cannot confirm itself.
   if (w.ownerId && job.excludedOwners?.includes(w.ownerId)) return 'EXCLUDED';
+  // ...and from different networks: two accounts behind one connection are one party.
+  if (w.network && job.excludedNetworks?.includes(w.network)) return 'EXCLUDED';
+  if (job.needsTrusted && !w.trusted) return 'UNTRUSTED_VERIFIER';
   if (!w.capacity) return 'NO_CAPACITY_REPORTED';
   if (!w.workloadTypes.includes(job.type)) return 'TYPE_UNSUPPORTED';
   if (w.activeAssignments >= w.maxConcurrent) return 'NO_SLOTS';

@@ -1,0 +1,14 @@
+# Dependency and action updates, grouped weekly. Security advisories open PRs at once.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories: ["/control-plane", "/dashboard", "/desktop"]
+    schedule: { interval: weekly }
+    groups: { npm: { patterns: ["*"] } }
+  - package-ecosystem: cargo
+    directories: ["/agent", "/ipc", "/desktop/src-tauri", "/workloads/benchmark", "/workloads/image-inference"]
+    schedule: { interval: weekly }
+    groups: { cargo: { patterns: ["*"] } }
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
