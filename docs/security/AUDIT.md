@@ -357,11 +357,11 @@ Mesmo assim, a abertura depende destas condições de **implantação**. Elas n�
 1. **Terminação TLS** num proxy, com `TRUST_PROXY` = o IP ou CIDR do proxy e `REQUIRE_TLS=true`.
 2. **Proteção volumétrica** (CDN ou proxy com limite por IP) na frente da API.
 3. **`REQUIRE_TRUSTED_REPLICA=true`**, com capacidade da própria plataforma online. Recomendado para a abertura; sem isso, o conluio entre contas em redes diferentes fica em risco Médio.
-4. **Windows:** regra de firewall do instalador bloqueando saída de rede do `ghost-sandbox.exe`, para fechar o residual dos itens 5 e 15.
+4. **Windows:** regra de firewall que bloqueia a saída de rede do `ghost-sandbox.exe`, para fechar o residual dos itens 5 e 15. **Feito:** o instalador cria a regra e o CI confere ([installer/windows](../../installer/windows/README.md)).
 5. **Binários assinados** (Authenticode) antes da distribuição pública.
 6. **Aviso aos clientes:** provedores veem os inputs; dados sensíveis não devem ser enviados.
 
-Itens 4 e 5 são trabalho de empacotamento, que ainda não existe no repositório. Até lá, recomendo abrir só para provedores Linux, ou para provedores Windows cientes do residual do item 5.
+O item 5 (assinatura) continua pendente e depende de um certificado da organização.
 
 ## Riscos residuais (Médio)
 
