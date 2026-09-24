@@ -8,6 +8,10 @@
     <DesktopExe>                                           (desktop app, release)
   Downloads the WebView2 bootstrapper from Microsoft and refuses it unless its
   Authenticode signature is valid and issued to Microsoft Corporation.
+
+  Code signing (sign.ps1) when a certificate is configured (SIGN_PFX_BASE64 or
+  SIGN_CERT_THUMBPRINT): the programs before they go into the MSI, then the MSI, then
+  the setup bundle (engine and bundle). Without one, the build is the same, unsigned.
 #>
 param(
   [Parameter(Mandatory)] [string] $Version,
@@ -59,6 +63,10 @@ $readme = Join-Path $here 'COMO-FUNCIONA.txt'
 $rtf = Join-Path $obj 'how-it-works.rtf'
 [System.IO.File]::WriteAllText($rtf, (ConvertTo-Rtf (Get-Content -Raw -Encoding utf8 $readme)), [System.Text.Encoding]::ASCII)
 
+# --- Code signing: the programs first, so the MSI carries signed binaries ------------
+$sign = Join-Path $here 'sign.ps1'
+$signed = & $sign -Files @((Join-Path $BinDir 'ghost-agent.exe'), (Join-Path $BinDir 'ghost-sandbox.exe'), $DesktopExe)
+
 # --- MSI -------------------------------------------------------------------------
 $msi = Join-Path $OutDir "ghost-worker-$Version.msi"
 wix build -arch x64 -culture pt-BR `
@@ -69,6 +77,7 @@ wix build -arch x64 -culture pt-BR `
   -intermediatefolder (Join-Path $obj 'msi') `
   (Join-Path $here 'Package.wxs') (Join-Path $here 'UI.wxs') -o $msi
 if ($LASTEXITCODE) { throw 'MSI build failed' }
+if ($signed) { [void](& $sign -Files $msi) }
 
 # --- WebView2 bootstrapper (Microsoft-signed only) --------------------------------
 $wv2 = Join-Path $obj 'MicrosoftEdgeWebview2Setup.exe'
@@ -88,5 +97,6 @@ wix build -arch x64 `
   -intermediatefolder (Join-Path $obj 'bundle') `
   (Join-Path $here 'Bundle.wxs') -o $setup
 if ($LASTEXITCODE) { throw 'bundle build failed' }
+if ($signed) { [void](& $sign -Files $setup -Bundle) }
 
 Get-Item $msi, $setup | Select-Object Name, Length | Format-Table

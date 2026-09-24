@@ -66,7 +66,30 @@ cd desktop; npm ci; npx tauri build --no-bundle
 WiX Toolset 5.0.2, fixado. O CI (`.github/workflows/installer.yml`) faz tudo isso num Windows limpo.
 O `test-install.ps1` confere cada item das tabelas acima depois de instalar, e de novo depois de remover.
 
+## Assinatura de código (Authenticode)
+
+Sem assinatura, o SmartScreen avisa "editor desconhecido". O build assina tudo quando há um
+certificado de assinatura de código configurado ([`sign.ps1`](sign.ps1)), na ordem certa:
+`ghost-agent.exe`, `ghost-sandbox.exe` e `ghost.exe` antes de entrarem no MSI; depois o MSI; por fim o
+`setup.exe` (o engine do Burn é separado, assinado e recolocado, e então o pacote é assinado). Cada
+assinatura usa SHA-256 com carimbo de tempo RFC 3161 e é verificada (`signtool verify /pa`).
+
+| Onde está o certificado | O que configurar |
+|---|---|
+| Arquivo `.pfx` exportável | Secrets do repositório `WINDOWS_SIGN_PFX_BASE64` (o `.pfx` em base64: `[Convert]::ToBase64String([IO.File]::ReadAllBytes('cert.pfx'))`) e `WINDOWS_SIGN_PFX_PASSWORD`. O CI passa a assinar e o teste de instalação passa a exigir assinatura válida. |
+| Token físico ou HSM na nuvem que aparece no repositório de certificados do Windows | Build local: `$env:SIGN_CERT_THUMBPRINT = '<thumbprint>'` antes do `build.ps1`. |
+
+Sem certificado, os artefatos saem sem assinatura, e o CI prova o processo assim mesmo: um certificado
+descartável, confiável só naquela máquina, assina cópias de tudo e cada assinatura precisa ser verificada.
+
+Certificados de assinatura de código emitidos desde 2023 ficam em hardware (token ou HSM), por regra
+do CA/Browser Forum; um `.pfx` exportável é coisa de certificado antigo ou de CA que o oferece em HSM com
+exportação para CI. Opções para quem não tem empresa: Certum Open Source Code Signing (pessoa física,
+projeto de código aberto, nuvem SimplySign), SignPath Foundation (gratuito para projetos de código
+aberto, assina pelo próprio serviço) ou um certificado OV de uma CA com assinatura em nuvem (DigiCert
+KeyLocker, SSL.com eSigner).
+
 ## Pendente para distribuição pública
 
-- **Assinatura de código (Authenticode)** do MSI, do `setup.exe` e dos `.exe`. Sem ela, o SmartScreen avisa. Precisa de um certificado da organização; o passo entra no CI quando o certificado existir.
+- **Certificado de assinatura de código.** O processo está pronto (acima); falta o certificado.
 - **Outros firewalls:** com firewall de terceiros no lugar do Firewall do Windows, a regra do sandbox precisa ser criada nele. Uma falha do `netsh` não interrompe a instalação.

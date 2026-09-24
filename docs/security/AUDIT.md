@@ -338,12 +338,13 @@ Os dois riscos **críticos** encontrados (3 e 9) estão mitigados e testados. Os
   - **Novo:** `permissions: contents: read` em todos os workflows (token de CI só leitura).
   - **Novo:** Dependabot para npm, cargo e GitHub Actions.
   - **Novo:** GitHub Actions fixadas por SHA do commit (com a versão em comentário); uma tag movida por terceiros não muda o que roda no CI. O Dependabot atualiza SHA e comentário juntos.
+  - **Novo:** assinatura de código pronta no build ([installer/windows/sign.ps1](../../installer/windows/sign.ps1)): programas, MSI e `setup.exe` (engine e pacote), SHA-256 com carimbo de tempo, cada assinatura verificada. Liga sozinha com o certificado nos secrets `WINDOWS_SIGN_PFX_BASE64`/`_PASSWORD`; sem ele, o CI prova o processo com um certificado descartável em cópias.
   - **Novo:** `rustls-pemfile` (RUSTSEC-2025-0134, sem manutenção) removido; o parsing de PEM agora usa o próprio rustls.
 - **Estado na auditoria:**
   - `npm audit`: 0 vulnerabilidades em control-plane, dashboard e desktop.
   - `cargo audit`: 0 vulnerabilidades. Avisos restantes: crates sem manutenção no stack Linux do Tauri (glib, unic-*, proc-macro-error), fora do build Windows do app.
 - **Residual:**
-  - Binários ainda não são assinados (Authenticode).
+  - Binários ainda não são assinados (Authenticode): o processo está pronto, falta o certificado.
   - **Médio.**
 
 ---
@@ -363,10 +364,10 @@ Mesmo assim, a abertura depende destas condições de **implantação**. Elas n�
 2. **Proteção volumétrica** (CDN ou proxy com limite por IP) na frente da API.
 3. **Computadores da equipe online** (de contas admin/operator), para a verificação aleatória (`TRUSTED_SPOT_CHECK_PERCENT`, ligada por padrão) ter quem verifique. Sem nenhum, o conluio entre contas em redes diferentes fica em risco Médio. `REQUIRE_TRUSTED_REPLICA=true` verifica todos os jobs, se houver capacidade para isso.
 4. **Windows:** regra de firewall que bloqueia a saída de rede do `ghost-sandbox.exe`, para fechar o residual dos itens 5 e 15. **Feito:** o instalador cria a regra e o CI confere ([installer/windows](../../installer/windows/README.md)).
-5. **Binários assinados** (Authenticode) antes da distribuição pública.
+5. **Binários assinados** (Authenticode) antes da distribuição pública: basta colocar o certificado nos secrets do repositório ([installer/windows](../../installer/windows/README.md#assinatura-de-código-authenticode)).
 6. **Aviso aos clientes:** provedores veem os inputs; dados sensíveis não devem ser enviados.
 
-O item 5 (assinatura) continua pendente e depende de um certificado da organização.
+O item 5 (assinatura) depende só do certificado: o build e o CI já assinam e verificam quando ele existe.
 
 ## Riscos residuais (Médio)
 
@@ -376,4 +377,4 @@ O item 5 (assinatura) continua pendente e depende de um certificado da organiza�
 | 5 / 15 | Windows sem AppContainer: um escape teria rede e arquivos do usuário | Criar o sandbox com AppContainer ou token restrito; firewall no instalador |
 | 10 | DDoS volumétrico | CDN/WAF |
 | 12 | Provedor vê inputs | Documentado; computação confidencial está fora do escopo |
-| 16 | Binários sem assinatura | Assinatura de código |
+| 16 | Binários sem assinatura (processo pronto, falta o certificado) | Certificado de assinatura de código nos secrets |
