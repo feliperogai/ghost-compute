@@ -95,6 +95,29 @@ if (-not $answered) {
   }
 }
 
+# Sandbox isolation: the installed binary is readable and runnable by apps (inherited
+# Program Files ACL, which the AppContainer relies on), and the service's start-up
+# self-test ran a workload in its AppContainer under the service's own account.
+$sandboxExe = Join-Path $prog 'ghost-sandbox.exe'
+$rx = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+# Rules read as SIDs: the account name of S-1-15-2-1 does not always translate back.
+$rules = (Get-Acl $sandboxExe).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+$forApps = @($rules | Where-Object {
+  $_.IdentityReference.Value -eq 'S-1-15-2-1' -and $_.AccessControlType -eq 'Allow' -and (($_.FileSystemRights -band $rx) -eq $rx)
+})
+Check ($forApps.Count -gt 0) 'sandbox binary readable and runnable by AppContainers (ALL APPLICATION PACKAGES)'
+$logFiles = Join-Path $data 'logs\*'
+$selfTest = WaitFor { @(Select-String -Path $logFiles -Pattern 'sandbox self-test' -SimpleMatch -ErrorAction SilentlyContinue).Count -gt 0 } 90
+$passed = @(Select-String -Path $logFiles -Pattern 'sandbox self-test passed' -SimpleMatch -ErrorAction SilentlyContinue).Count -gt 0
+Check ($selfTest -and $passed) 'service: sandbox self-test passed (AppContainer, service account)'
+if (-not $passed) {
+  Select-String -Path $logFiles -Pattern 'self-test' -SimpleMatch -ErrorAction SilentlyContinue | Select-Object -First 5 |
+    ForEach-Object { Write-Host "       $($_.Line)" }
+}
+# The same check from the command line (administrator), as the install guide suggests.
+$out = & $agent self-test 2>&1 | Out-String
+Check ($LASTEXITCODE -eq 0 -and $out -match '"ok": true' -and $out -match 'AppContainer') "ghost-agent self-test (got: $($out.Trim()))"
+
 # Firewall: no inbound rule, one outbound block for the sandbox.
 $rule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
 Check ($null -ne $rule) 'firewall rule created'

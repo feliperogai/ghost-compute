@@ -1,11 +1,11 @@
 //! Agent side of the sandbox process: spawn, confine, feed, supervise, destroy.
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::inference::{InferenceItem, encode_frame};
@@ -84,6 +84,33 @@ impl Sandbox {
         &self.work_root
     }
 
+    /// How this platform isolates the sandbox (for logs and the self-test report).
+    pub const ISOLATION: &'static str = if cfg!(windows) {
+        "AppContainer (sem rede, sem arquivos do usuário) + Job Object"
+    } else {
+        "seccomp + rlimits"
+    };
+
+    /// A short built-in workload, isolated exactly as a job is: proves this computer can
+    /// run work before it accepts any. Returns the workload's output.
+    pub async fn self_test(&self) -> Result<serde_json::Value, SandboxError> {
+        use super::registry::{BenchmarkKind, BenchmarkParams};
+        let primes =
+            Workload::Benchmark(BenchmarkParams { kind: BenchmarkKind::Primes, size: 1000, iterations: 3, seed: 1 });
+        let limits = SandboxLimits {
+            wasm_memory_bytes: 64 << 20,
+            process_memory_bytes: 1 << 30,
+            cpu_percent: 50,
+            deadline: Duration::from_secs(30),
+        };
+        let out = self.run(&primes, limits, |_| {}, CancellationToken::new()).await?;
+        // 168 primes up to 1000.
+        if out["checksum"] != "00000000000000a8" {
+            return Err(SandboxError::Protocol(format!("self-test: unexpected result {out}")));
+        }
+        Ok(out)
+    }
+
     /// `ghost-sandbox(.exe)` next to the running agent.
     pub fn default_exe() -> PathBuf {
         let name = if cfg!(windows) { "ghost-sandbox.exe" } else { "ghost-sandbox" };
@@ -132,48 +159,7 @@ impl Sandbox {
         on: &mut impl FnMut(Update),
         cancel: CancellationToken,
     ) -> Result<serde_json::Value, SandboxError> {
-        let mut cmd = Command::new(&self.exe);
-        cmd.env_clear()
-            .current_dir(dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(windows)]
-        {
-            // Needed by the CRT/loader; nothing else from the agent's environment.
-            if let Some(root) = std::env::var_os("SystemRoot") {
-                cmd.env("SystemRoot", root);
-            }
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        #[cfg(unix)]
-        {
-            let mem = limits.process_memory_bytes;
-            let cpu_secs = limits.deadline.as_secs() + 5;
-            // GPU drivers (Mesa) back device memory with memfds, which RLIMIT_FSIZE also
-            // caps; allow those up to the memory limit and turn the on-disk shader cache off.
-            let fsize = if input.gpu == GpuMode::Off { 0 } else { mem };
-            if input.gpu != GpuMode::Off {
-                cmd.env("MESA_SHADER_CACHE_DISABLE", "true");
-            }
-            unsafe {
-                cmd.pre_exec(move || unix::confine(mem, cpu_secs, fsize));
-            }
-        }
-
-        let mut child = cmd.spawn().map_err(|e| SandboxError::Spawn(e.to_string()))?;
-
-        // Windows: confine BEFORE sending the request; the sandbox does nothing until it reads it.
-        #[cfg(windows)]
-        let job = {
-            let job = windows::JobObject::new(limits.process_memory_bytes, limits.cpu_percent)
-                .map_err(|e| SandboxError::Spawn(format!("job object: {e}")))?;
-            let h = child.raw_handle().ok_or_else(|| SandboxError::Spawn("no process handle".into()))?;
-            job.assign(h).map_err(|e| SandboxError::Spawn(format!("assign job object: {e}")))?;
-            job
-        };
+        let Started { mut stdin, stdout, child } = spawn(&self.exe, dir, &limits, input.gpu)?;
 
         let req = Request {
             workload: workload.clone(),
@@ -184,7 +170,6 @@ impl Sandbox {
         };
         let mut line = serde_json::to_vec(&req).map_err(|e| SandboxError::Protocol(e.to_string()))?;
         line.push(b'\n');
-        let mut stdin = child.stdin.take().expect("piped stdin");
         // Writer runs alongside the reader: frames are streamed while results come back.
         // If the OS already killed the sandbox (e.g. memory cap) writes fail with a broken
         // pipe; the read loop below then sees EOF and reports the crash with its exit status.
@@ -205,7 +190,6 @@ impl Sandbox {
         });
         let _writer_guard = AbortOnDrop(writer);
 
-        let stdout = child.stdout.take().expect("piped stdout");
         // Bounded total output: a runaway sandbox cannot exhaust agent memory.
         let mut lines = BufReader::new(stdout.take(MAX_STDOUT)).lines();
         let deadline = tokio::time::sleep(limits.deadline + KILL_GRACE);
@@ -235,15 +219,91 @@ impl Sandbox {
         };
 
         // Destroy: kill whatever is still running, then reap.
-        #[cfg(windows)]
-        job.terminate();
-        let _ = child.start_kill();
-        let status = child.wait().await.ok();
+        let status = child.kill_and_wait().await;
         match (&outcome, status) {
-            (Err(SandboxError::Crashed(_)), Some(s)) => Err(SandboxError::Crashed(s.to_string())),
+            (Err(SandboxError::Crashed(_)), Some(s)) => Err(SandboxError::Crashed(s)),
             _ => outcome,
         }
     }
+}
+
+/// A sandbox process that was started confined: its pipes and its lifetime.
+struct Started {
+    stdin: Box<dyn AsyncWrite + Unpin + Send>,
+    stdout: Box<dyn AsyncRead + Unpin + Send>,
+    child: Child,
+}
+
+#[cfg(unix)]
+struct Child(tokio::process::Child);
+
+#[cfg(unix)]
+impl Child {
+    async fn kill_and_wait(mut self) -> Option<String> {
+        let _ = self.0.start_kill();
+        self.0.wait().await.ok().map(|s| s.to_string())
+    }
+}
+
+#[cfg(unix)]
+fn spawn(exe: &Path, dir: &Path, limits: &SandboxLimits, gpu: GpuMode) -> Result<Started, SandboxError> {
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.env_clear()
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mem = limits.process_memory_bytes;
+    let cpu_secs = limits.deadline.as_secs() + 5;
+    // GPU drivers (Mesa) back device memory with memfds, which RLIMIT_FSIZE also caps;
+    // allow those up to the memory limit and turn the on-disk shader cache off.
+    let fsize = if gpu == GpuMode::Off { 0 } else { mem };
+    if gpu != GpuMode::Off {
+        cmd.env("MESA_SHADER_CACHE_DISABLE", "true");
+    }
+    unsafe {
+        cmd.pre_exec(move || unix::confine(mem, cpu_secs, fsize));
+    }
+    let mut child = cmd.spawn().map_err(|e| SandboxError::Spawn(e.to_string()))?;
+    let stdin = child.stdin.take().expect("piped stdin");
+    let stdout = child.stdout.take().expect("piped stdout");
+    Ok(Started { stdin: Box::new(stdin), stdout: Box::new(stdout), child: Child(child) })
+}
+
+/// Windows: in an AppContainer (no network, no user files) inside a Job Object (memory,
+/// CPU, one process), both in place before its first instruction.
+#[cfg(windows)]
+struct Child {
+    process: super::isolation::Process,
+    // Dropping it (e.g. the run is abandoned) kills the process: KILL_ON_JOB_CLOSE.
+    job: super::isolation::JobObject,
+}
+
+#[cfg(windows)]
+impl Child {
+    async fn kill_and_wait(self) -> Option<String> {
+        self.job.terminate();
+        self.process.terminate();
+        let p = self.process.clone();
+        tokio::task::spawn_blocking(move || p.wait_blocking()).await.ok().map(|code| format!("exit code: {code}"))
+    }
+}
+
+#[cfg(windows)]
+fn spawn(exe: &Path, dir: &Path, limits: &SandboxLimits, _gpu: GpuMode) -> Result<Started, SandboxError> {
+    use super::isolation;
+    let job = isolation::JobObject::new(limits.process_memory_bytes, limits.cpu_percent)
+        .map_err(|e| SandboxError::Spawn(format!("job object: {e}")))?;
+    isolation::allow_running(exe);
+    // Its own run directory is the only place it may touch.
+    isolation::grant(dir, isolation::RUN_DIR_ACCESS, true).map_err(SandboxError::Spawn)?;
+    let p = isolation::spawn(exe, &[], dir, &job).map_err(SandboxError::Spawn)?;
+    Ok(Started {
+        stdin: Box::new(tokio::fs::File::from_std(p.stdin)),
+        stdout: Box::new(tokio::fs::File::from_std(p.stdout)),
+        child: Child { process: p.process, job },
+    })
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -291,97 +351,5 @@ mod unix {
             libc::setsid();
         }
         Ok(())
-    }
-}
-
-#[cfg(windows)]
-mod windows {
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::System::JobObjects::*;
-    use windows::Win32::System::Threading::IDLE_PRIORITY_CLASS;
-
-    /// Job Object: memory cap, CPU hard cap, one process, killed when the handle closes.
-    pub struct JobObject(HANDLE);
-
-    // HANDLE is a kernel handle; safe to move between threads.
-    unsafe impl Send for JobObject {}
-    unsafe impl Sync for JobObject {}
-
-    impl JobObject {
-        /// Fails closed: if any limit cannot be applied, no job object is returned and nothing runs.
-        pub fn new(memory_bytes: u64, cpu_percent: u32) -> Result<Self, String> {
-            let step = |what: &'static str| move |e: windows::core::Error| format!("{what}: {e}");
-            unsafe {
-                let h = CreateJobObjectW(None, None).map_err(step("create"))?;
-                let job = JobObject(h);
-                let mut ext = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-                ext.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                    | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-                    | JOB_OBJECT_LIMIT_PROCESS_MEMORY
-                    | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
-                    | JOB_OBJECT_LIMIT_PRIORITY_CLASS;
-                ext.BasicLimitInformation.ActiveProcessLimit = 1;
-                ext.BasicLimitInformation.PriorityClass = IDLE_PRIORITY_CLASS.0;
-                ext.ProcessMemoryLimit = memory_bytes as usize;
-                SetInformationJobObject(
-                    h,
-                    JobObjectExtendedLimitInformation,
-                    &ext as *const _ as *const _,
-                    std::mem::size_of_val(&ext) as u32,
-                )
-                .map_err(step("memory/process limits"))?;
-
-                let cpu = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION {
-                    ControlFlags: JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
-                    // Units of 1/100 of a percent of the whole machine.
-                    Anonymous: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION_0 { CpuRate: cpu_percent.clamp(1, 100) * 100 },
-                };
-                SetInformationJobObject(
-                    h,
-                    JobObjectCpuRateControlInformation,
-                    &cpu as *const _ as *const _,
-                    std::mem::size_of_val(&cpu) as u32,
-                )
-                .map_err(step("CPU hard cap"))?;
-
-                let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
-                    UIRestrictionsClass: JOB_OBJECT_UILIMIT_DESKTOP
-                        | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
-                        | JOB_OBJECT_UILIMIT_EXITWINDOWS
-                        | JOB_OBJECT_UILIMIT_GLOBALATOMS
-                        | JOB_OBJECT_UILIMIT_HANDLES
-                        | JOB_OBJECT_UILIMIT_READCLIPBOARD
-                        | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
-                        | JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
-                };
-                SetInformationJobObject(
-                    h,
-                    JobObjectBasicUIRestrictions,
-                    &ui as *const _ as *const _,
-                    std::mem::size_of_val(&ui) as u32,
-                )
-                .map_err(step("UI restrictions"))?;
-                Ok(job)
-            }
-        }
-
-        pub fn assign(&self, process: std::os::windows::io::RawHandle) -> windows::core::Result<()> {
-            unsafe { AssignProcessToJobObject(self.0, HANDLE(process as _)) }
-        }
-
-        pub fn terminate(&self) {
-            unsafe {
-                let _ = TerminateJobObject(self.0, 1);
-            }
-        }
-    }
-
-    impl Drop for JobObject {
-        fn drop(&mut self) {
-            // KILL_ON_JOB_CLOSE: closing the last handle kills anything left inside.
-            unsafe {
-                let _ = CloseHandle(self.0);
-            }
-        }
     }
 }

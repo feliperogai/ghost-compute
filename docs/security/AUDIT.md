@@ -148,12 +148,16 @@ Os dois riscos **críticos** encontrados (3 e 9) estão mitigados e testados. Os
     - checagem estrita de handles;
     - isolamento contra side channel quando o SO suporta.
   - **Novo:** se não conseguir se confinar, o sandbox não roda.
+  - **Novo — Windows: AppContainer.** O sandbox roda num AppContainer próprio (`ghost.sandbox`) **sem nenhuma capacidade**, em integridade baixa: sem rede (nem loopback), sem os arquivos do usuário e sem `ProgramData\ghost`; só a própria pasta da execução, liberada para ele, e o que o Windows libera a todo app (System32, Program Files). O processo nasce suspenso, entra no Job Object e só então roda; herda só stdin, stdout e stderr (lista explícita de handles), e não abre console. A GPU (Direct3D 12) funciona dentro dele. No serviço, o AppContainer recebe uso da estação de janela e da área de trabalho do próprio serviço (onde não há janelas), sem o que o `user32` não inicia; as restrições de UI do Job Object continuam valendo.
+  - **Novo:** o serviço roda um self-test do sandbox (isolado como um job) ao iniciar; se falhar, nenhum trabalho é aceito e o app mostra o motivo. `ghost-agent self-test` faz o mesmo na linha de comando.
 - **Testes:**
   - `security::confine` (processo filho confinado: cada chamada negada falha, o trabalho normal continua);
   - `sandbox_process.rs` › *sandbox_process_confines_itself…* (Seccomp 2 e NoNewPrivs no processo real no Linux; políticas lidas de fora no Windows);
-  - toda a suíte do agente, inclusive a GPU via lavapipe, roda com o filtro ativo.
+  - `isolation_windows.rs` (CI Windows): o token do sandbox real é AppContainer, com zero capacidades e a identidade `ghost.sandbox`; um processo no mesmo isolamento lê a própria pasta, mas não um arquivo do usuário, nem conecta a um servidor em `127.0.0.1` (cada "não" com controle fora do isolamento);
+  - `test-install.ps1`: o self-test do serviço instalado passa com a conta do serviço, e o `ghost-sandbox.exe` instalado é legível por AppContainers;
+  - toda a suíte do agente, inclusive a GPU via lavapipe, roda com o filtro ativo; no Windows, todos os testes de sandbox rodam dentro do AppContainer.
 - **Residual:**
-  - No Windows, sem AppContainer, um escape ainda teria a rede e o filesystem do usuário do agente. **Médio.** A recomendação de implantação está na última seção.
+  - Um escape do WebAssembly no Windows ainda precisaria escapar do AppContainer (fuga de kernel ou de broker do Windows) para chegar à rede ou aos arquivos do usuário. **Baixo.**
   - Timing de side channel (Spectre) entre jobs na mesma máquina é aceito como residual.
 
 ## 6. Roubo de credenciais
@@ -317,10 +321,12 @@ Os dois riscos **críticos** encontrados (3 e 9) estão mitigados e testados. Os
   - O agente só fala com o servidor configurado, em HTTPS.
   - O servidor não busca URLs: datasets chegam como bytes.
   - **Novo:** seccomp nega sockets IP, raw e netlink no sandbox (só AF_UNIX, para drivers).
+  - **Novo — Windows:** o AppContainer sem capacidades não tem rede nenhuma, nem loopback, independente do firewall; a regra de firewall do instalador fica como camada extra.
 - **Testes:**
   - `wasm_escape.rs` › imports de socket recusados;
-  - `security::confine` › *no_internet_or_raw_sockets*.
-- **Residual:** no Windows depende do firewall (checklist).
+  - `security::confine` › *no_internet_or_raw_sockets*;
+  - `isolation_windows.rs` › *the_isolation_has_no_network_not_even_loopback*.
+- **Residual:** **Baixo.**
 
 ## 16. Supply chain
 
@@ -363,7 +369,7 @@ Mesmo assim, a abertura depende destas condições de **implantação**. Elas n�
 1. **Terminação TLS** num proxy, com `TRUST_PROXY` = o IP ou CIDR do proxy e `REQUIRE_TLS=true`.
 2. **Proteção volumétrica** (CDN ou proxy com limite por IP) na frente da API.
 3. **Computadores da equipe online** (de contas admin/operator), para a verificação aleatória (`TRUSTED_SPOT_CHECK_PERCENT`, ligada por padrão) ter quem verifique. Sem nenhum, o conluio entre contas em redes diferentes fica em risco Médio. `REQUIRE_TRUSTED_REPLICA=true` verifica todos os jobs, se houver capacidade para isso.
-4. **Windows:** regra de firewall que bloqueia a saída de rede do `ghost-sandbox.exe`, para fechar o residual dos itens 5 e 15. **Feito:** o instalador cria a regra e o CI confere ([installer/windows](../../installer/windows/README.md)).
+4. **Windows:** regra de firewall que bloqueia a saída de rede do `ghost-sandbox.exe`. **Feito:** o instalador cria a regra e o CI confere ([installer/windows](../../installer/windows/README.md)). Com o AppContainer, o sandbox já não tem rede; a regra fica como camada extra.
 5. **Binários assinados** (Authenticode) antes da distribuição pública: basta colocar o certificado nos secrets do repositório ([installer/windows](../../installer/windows/README.md#assinatura-de-código-authenticode)).
 6. **Aviso aos clientes:** provedores veem os inputs; dados sensíveis não devem ser enviados.
 
@@ -374,7 +380,6 @@ O item 5 (assinatura) depende só do certificado: o build e o CI já assinam e v
 | Ameaça | Residual | Próximo passo |
 |---|---|---|
 | 3 | Conluio de contas em redes diferentes, sem computadores da equipe online | Manter computadores da equipe online (verificação aleatória) ou `REQUIRE_TRUSTED_REPLICA=true` |
-| 5 / 15 | Windows sem AppContainer: um escape teria rede e arquivos do usuário | Criar o sandbox com AppContainer ou token restrito; firewall no instalador |
 | 10 | DDoS volumétrico | CDN/WAF |
 | 12 | Provedor vê inputs | Documentado; computação confidencial está fora do escopo |
 | 16 | Binários sem assinatura (processo pronto, falta o certificado) | Certificado de assinatura de código nos secrets |

@@ -42,6 +42,9 @@ pub async fn supervise(cfg: Config, mut shutdown: watch::Receiver<bool>) -> anyh
         });
     }
 
+    // The sandbox, isolated exactly as a job would be, must work before any job is taken.
+    let sandbox_ok = sandbox_self_test(&data_dir).await;
+
     loop {
         if *shutdown.borrow() {
             return Ok(());
@@ -68,7 +71,7 @@ pub async fn supervise(cfg: Config, mut shutdown: watch::Receiver<bool>) -> anyh
             continue;
         }
 
-        match run_enrolled(&cfg, &hub, shutdown.clone()).await? {
+        match run_enrolled(&cfg, &hub, shutdown.clone(), sandbox_ok).await? {
             Exit::Shutdown => {
                 hub.set_running(None);
                 return Ok(());
@@ -89,8 +92,34 @@ pub async fn supervise(cfg: Config, mut shutdown: watch::Receiver<bool>) -> anyh
     }
 }
 
+/// Runs the sandbox self-test once (at service start); false disables execution.
+async fn sandbox_self_test(data_dir: &std::path::Path) -> bool {
+    let exe = execution::sandbox::Sandbox::default_exe();
+    if !exe.exists() {
+        return false; // reported when execution would start
+    }
+    let work = data_dir.join("selftest");
+    let r = execution::sandbox::Sandbox::new(exe, work.clone()).self_test().await;
+    let _ = std::fs::remove_dir_all(&work);
+    match r {
+        Ok(_) => {
+            info!(isolation = execution::sandbox::Sandbox::ISOLATION, "sandbox self-test passed");
+            true
+        }
+        Err(e) => {
+            error!(error = %e, isolation = execution::sandbox::Sandbox::ISOLATION, "sandbox self-test failed; execution disabled");
+            false
+        }
+    }
+}
+
 /// The agent proper: monitoring, owner limits, heartbeat and execution.
-async fn run_enrolled(cfg: &Config, hub: &Arc<Hub>, shutdown: watch::Receiver<bool>) -> anyhow::Result<Exit> {
+async fn run_enrolled(
+    cfg: &Config,
+    hub: &Arc<Hub>,
+    shutdown: watch::Receiver<bool>,
+    sandbox_ok: bool,
+) -> anyhow::Result<Exit> {
     let data_dir = cfg.data_dir();
     let store = CredentialStore::new(&data_dir);
     let creds = store.load()?.context("credentials disappeared")?;
@@ -126,7 +155,7 @@ async fn run_enrolled(cfg: &Config, hub: &Arc<Hub>, shutdown: watch::Receiver<bo
             worker_id: creds.worker_id,
             device_id: identity.device_id,
             server_url: cfg.server.url.clone(),
-            execution_available: execution::AVAILABLE,
+            execution_available: execution::AVAILABLE && sandbox_ok,
         },
         hw,
         snapshots,
@@ -138,7 +167,7 @@ async fn run_enrolled(cfg: &Config, hub: &Arc<Hub>, shutdown: watch::Receiver<bo
 
     let client = Arc::new(ApiClient::new(&cfg.server, Some(creds))?);
     let sandbox_exe = execution::sandbox::Sandbox::default_exe();
-    let executor = if execution::AVAILABLE && sandbox_exe.exists() {
+    let executor = if execution::AVAILABLE && sandbox_exe.exists() && sandbox_ok {
         let work = data_dir.join("sandbox");
         // Leftovers from a crash: every run directory is disposable.
         let _ = std::fs::remove_dir_all(&work);
@@ -150,7 +179,7 @@ async fn run_enrolled(cfg: &Config, hub: &Arc<Hub>, shutdown: watch::Receiver<bo
             cfg.agent.max_concurrent_tasks as usize,
         ))
     } else {
-        warn!(sandbox = %sandbox_exe.display(), "sandbox binary not found; execution disabled");
+        warn!(sandbox = %sandbox_exe.display(), "sandbox missing or failed its self-test; execution disabled");
         None
     };
     let hb = HeartbeatLoop {

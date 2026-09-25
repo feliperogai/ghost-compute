@@ -73,6 +73,9 @@ enum Cmd {
         #[arg(value_enum)]
         action: ControlArg,
     },
+    /// Run a short built-in workload in the sandbox, isolated as a job would be, and
+    /// print the result as JSON (exit code 1 if this computer cannot run work).
+    SelfTest,
     /// Print the hardware inventory as JSON.
     Hardware,
     /// Print resource samples as JSON lines.
@@ -152,7 +155,29 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::UninstallCleanup { keep_data } => uninstall_cleanup(cli.config, keep_data).await,
+        Cmd::SelfTest => self_test(load_config(cli.config)?).await,
     }
+}
+
+/// Checks this computer can run work: a short benchmark in the real sandbox (Windows:
+/// AppContainer inside a Job Object; Linux: seccomp and rlimits).
+async fn self_test(cfg: Config) -> anyhow::Result<ExitCode> {
+    use ghost_agent::execution::sandbox::Sandbox;
+    let work = cfg.data_dir().join("selftest");
+    let exe = Sandbox::default_exe();
+    let started = std::time::Instant::now();
+    let r = Sandbox::new(exe.clone(), work.clone()).self_test().await;
+    let _ = std::fs::remove_dir_all(&work);
+    let report = serde_json::json!({
+        "ok": r.is_ok(),
+        "sandbox": exe,
+        "isolation": Sandbox::ISOLATION,
+        "seconds": (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
+        "result": r.as_ref().ok(),
+        "error": r.as_ref().err().map(|e| e.to_string()),
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(if r.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
 async fn ipc_call(cfg: &Config, method: &str, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {

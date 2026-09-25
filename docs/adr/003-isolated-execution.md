@@ -78,7 +78,7 @@ A saída é determinística (checksum), mais o tempo medido pelo host:
 
 ## Limitações conhecidas (próximos passos)
 
-- **AppContainer / token de baixa integridade** para o processo sandbox ainda não estão implementados. Hoje o sandbox roda com o token da conta do serviço, confinado por Job Object. É a próxima camada a adicionar.
+- **AppContainer: feito.** O sandbox roda num AppContainer sem capacidades (integridade baixa, sem rede, sem arquivos do usuário), criado suspenso e colocado no Job Object antes de rodar (`agent/src/execution/isolation.rs`). O serviço faz um self-test ao iniciar e não aceita trabalho se o isolamento falhar.
 - **Teto de CPU e de memória do Job Object só são verificados no Windows real (CI).** No Wine, o teto de CPU não existe (o código falha fechado, comprovado) e o de memória não é aplicado.
 - **Linux só serve para desenvolvimento:** rlimits e `no_new_privs`, sem seccomp.
 - Módulos são embutidos. Distribuir módulos novos sem atualizar o agente exigirá assinatura Ed25519 dos módulos, conforme a arquitetura.

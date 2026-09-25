@@ -72,7 +72,7 @@ export function reasonText(r: Reason): string {
     case 'cooling_down':
       return `Tudo certo. Liberando em ${fmtDur(r.remaining_secs)}`;
     case 'execution_unavailable':
-      return 'Esta versão do agente ainda não executa trabalhos';
+      return 'O isolamento (sandbox) deste computador não passou na verificação: nenhum trabalho roda. Veja os logs';
     case 'no_data':
       return 'Coletando as primeiras medições';
   }
