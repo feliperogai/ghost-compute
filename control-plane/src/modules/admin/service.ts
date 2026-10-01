@@ -1,13 +1,19 @@
 import type { AppContext } from '../../context.js';
+import type { Config } from '../../config.js';
 import { withTx } from '../../db/pool.js';
 import { audit } from '../../audit.js';
 import { generateSecret, hashSecret } from '../../auth/crypto.js';
 import { conflict } from '../../errors.js';
-import type { Role } from '../../auth/plugin.js';
+import { isStaff, type Role } from '../../auth/plugin.js';
 import { grantSignup } from '../../credits/service.js';
 
+/** What creating a user reads: the CLI passes just this, so the compiler checks it is enough. */
+export type UserCreationContext = Pick<AppContext, 'db'> & {
+  config: Pick<Config, 'CREDITS_INITIAL_GRANT' | 'MEMBER_TOKEN_TTL_DAYS' | 'STAFF_TOKEN_TTL_DAYS'>;
+};
+
 export async function createUserWithToken(
-  ctx: AppContext,
+  ctx: UserCreationContext,
   input: { email: string; role: Role; tokenName: string },
   actorId: string | null,
   /** Welcome credits; default CREDITS_INITIAL_GRANT. */
@@ -24,12 +30,12 @@ export async function createUserWithToken(
     );
     if (!u.rows[0]) throw conflict('User already exists');
     const userId = u.rows[0]!.id;
-    // Public accounts' tokens expire (a stolen token is not good forever); staff tokens
-    // are managed by admins.
-    const ttlDays = input.role === 'member' ? ctx.config.MEMBER_TOKEN_TTL_DAYS : null;
-    await c.query(
+    // Every token expires (a stolen token is not good forever); the holder mints the next
+    // one with POST /v1/me/tokens.
+    const ttlDays = isStaff(input.role) ? ctx.config.STAFF_TOKEN_TTL_DAYS : ctx.config.MEMBER_TOKEN_TTL_DAYS;
+    const t = await c.query<{ expires_at: Date }>(
       `INSERT INTO api_tokens (user_id, name, token_hash, expires_at)
-       VALUES ($1, $2, $3, CASE WHEN $4::int IS NULL THEN NULL ELSE now() + make_interval(days => $4::int) END)`,
+       VALUES ($1, $2, $3, now() + make_interval(days => $4)) RETURNING expires_at`,
       [userId, input.tokenName, hashSecret(token), ttlDays],
     );
     await grantSignup(c, userId, grantCredits);
@@ -41,7 +47,7 @@ export async function createUserWithToken(
       targetId: userId,
       details: { email: input.email, role: input.role },
     });
-    return { userId, token };
+    return { userId, token, expiresAt: t.rows[0]!.expires_at.toISOString() };
   });
 }
 

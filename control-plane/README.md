@@ -78,7 +78,7 @@ Rate limit global por credencial (ou IP) em toda a API, `RATE_LIMIT_PER_MINUTE`;
 |---|---|---|---|
 | POST | `/v1/signup` | — | conta pública `member` + token (limite por IP; `OPEN_SIGNUP`, `SIGNUP_CREDITS`) — [ADR 008](../docs/adr/008-open-platform.md) |
 | GET | `/v1/me` · `/v1/me/tokens` | member | conta; tokens (validade, último uso) |
-| POST · DELETE | `/v1/me/tokens` · `/v1/me/tokens/:id` | member | criar token (validade máxima `MEMBER_TOKEN_TTL_DAYS`) · revogar |
+| POST · DELETE | `/v1/me/tokens` · `/v1/me/tokens/:id` | member | criar token (validade máxima `MEMBER_TOKEN_TTL_DAYS`; equipe: `STAFF_TOKEN_TTL_DAYS`) · revogar |
 | POST | `/v1/admin/users` | admin | cria usuário + token |
 | POST | `/v1/admin/enrollment-tokens` | admin | token de registro de Worker |
 | POST | `/v1/workers/register` | enrollment token | 1. registrar Worker |

@@ -167,12 +167,12 @@ Os dois riscos **críticos** encontrados (3 e 9) estão mitigados e testados. Os
   - **Novo:** tokens de contas públicas **expiram** (`MEMBER_TOKEN_TTL_DAYS`, padrão 30).
   - **Novo:** `/v1/me/tokens` para listar, criar (com a mesma validade máxima) e revogar os próprios tokens, com no máximo 20 ativos.
   - **Novo:** revogação do computador pelo dono.
+  - **Novo:** tokens da equipe também **expiram** (`STAFF_TOKEN_TTL_DAYS`, padrão 90) e são trocados por `/v1/me/tokens`. Tokens antigos sem validade ganham 90 dias a partir da atualização (migração 012).
 - **Testes:**
-  - `security.test.ts` › *public tokens expire, can be rotated and revoked…*, *a provider revokes a stolen computer…*;
+  - `security.test.ts` › *public tokens expire, can be rotated and revoked…*, *staff tokens expire too…*, *a provider revokes a stolen computer…*;
   - `auth.test.ts`;
   - agente: `credentials` (DPAPI, 0600).
 - **Residual:**
-  - Tokens da equipe não expiram por padrão. A troca deles é um procedimento operacional.
   - Não há MFA.
 
 ## 7. Man-in-the-middle
@@ -369,7 +369,7 @@ O item 5 (assinatura) continua pendente e depende de um certificado da organiza�
 |---|---|---|
 | 3 | Conluio de contas em redes diferentes (sem o modo confiável) | Verificação aleatória por computadores confiáveis |
 | 5 / 15 | Windows sem AppContainer: um escape teria rede e arquivos do usuário | Criar o sandbox com AppContainer ou token restrito; firewall no instalador |
-| 6 | Tokens da equipe sem validade; sem MFA | Validade para tokens da equipe; OIDC com MFA |
+| 6 | Sem MFA | OIDC com MFA |
 | 10 | DDoS volumétrico | CDN/WAF |
 | 12 | Provedor vê inputs | Documentado; computação confidencial está fora do escopo |
 | 16 | Ações por tag; binários sem assinatura | Fixar por SHA; assinatura de código |

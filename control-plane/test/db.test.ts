@@ -29,6 +29,7 @@ describe('create-admin CLI (first step of the install guide)', () => {
       encoding: 'utf8',
     });
     expect(out).toMatch(/api token \(shown once\): ghu_\S+/);
+    expect(out).toMatch(/expires: \d{4}-\d\d-\d\dT/);
     const { rows } = await db.query<{ role: string; balance: string }>(
       `SELECT u.role, COALESCE(SUM(e.amount), 0) AS balance
          FROM users u JOIN credit_wallets w ON w.user_id = u.id LEFT JOIN credit_entries e ON e.wallet_id = w.id

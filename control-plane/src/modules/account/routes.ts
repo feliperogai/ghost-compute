@@ -56,8 +56,8 @@ export const accountRoutes =
       },
       async (req, reply) => {
         const p = me(req);
-        // Public accounts never get a token longer-lived than the platform allows.
-        const max = isStaff(p.role) ? 365 : ctx.config.MEMBER_TOKEN_TTL_DAYS;
+        // Nobody gets a token longer-lived than the platform allows for their role.
+        const max = isStaff(p.role) ? ctx.config.STAFF_TOKEN_TTL_DAYS : ctx.config.MEMBER_TOKEN_TTL_DAYS;
         const ttl = Math.min(req.body.ttlDays ?? max, max);
         const active = await ctx.db.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM api_tokens WHERE user_id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())`,
