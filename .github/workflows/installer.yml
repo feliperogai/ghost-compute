@@ -17,6 +17,8 @@ jobs:
     runs-on: windows-latest
     env:
       VERSION: 0.1.${{ github.run_number }}
+      # Code signing: on when the repository has the certificate secrets (see installer README).
+      SIGNING: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
@@ -46,8 +48,11 @@ jobs:
           npm ci
           npx tauri build --no-bundle
 
-      - name: Build MSI and setup
+      - name: Build MSI and setup (signed when the certificate secrets are set)
         shell: pwsh
+        env:
+          SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
           $exe = Get-ChildItem desktop/src-tauri/target/release -Filter *.exe | Where-Object Name -in 'ghost.exe', 'ghost-desktop.exe' | Select-Object -First 1
           if (-not $exe) { throw 'desktop exe not found' }
@@ -55,7 +60,46 @@ jobs:
 
       - name: Install, check, uninstall, check
         shell: pwsh
-        run: ./installer/windows/test-install.ps1 -Msi (Resolve-Path "installer/windows/out/ghost-worker-$env:VERSION.msi")
+        run: ./installer/windows/test-install.ps1 -Msi (Resolve-Path "installer/windows/out/ghost-worker-$env:VERSION.msi") -ExpectSigned:($env:SIGNING -eq 'true')
+
+      # Without the secrets, prove the signing pipeline anyway: a throwaway certificate,
+      # trusted only on this disposable runner, goes through the real build (copies of the
+      # programs, separate output folder): the MSI, the setup bundle and every program
+      # inside the MSI must carry a valid, timestamped signature. Artifacts stay unsigned.
+      - name: Signing pipeline check (throwaway certificate, separate build)
+        if: env.SIGNING != 'true'
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=ghost CI throwaway' `
+            -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddDays(1)
+          $cer = Join-Path $env:RUNNER_TEMP 'throwaway.cer'
+          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+          foreach ($store in 'Root', 'TrustedPublisher') { Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\LocalMachine\$store" | Out-Null }
+          $env:SIGN_CERT_THUMBPRINT = $cert.Thumbprint
+          $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
+
+          $bin = Join-Path $env:RUNNER_TEMP 'signcheck-bin'
+          $out = Join-Path $env:RUNNER_TEMP 'signcheck-out'
+          New-Item -ItemType Directory -Force $bin | Out-Null
+          Copy-Item agent/target/release/ghost-agent.exe, agent/target/release/ghost-sandbox.exe $bin
+          $app = Get-ChildItem desktop/src-tauri/target/release -Filter *.exe | Where-Object Name -in 'ghost.exe', 'ghost-desktop.exe' | Select-Object -First 1
+          Copy-Item $app.FullName $bin
+          ./installer/windows/build.ps1 -Version $env:VERSION -BinDir $bin -DesktopExe (Join-Path $bin $app.Name) -OutDir $out
+
+          function Assert-Signed([string] $file, [string] $what) {
+            $s = Get-AuthenticodeSignature $file
+            if ($s.Status -ne 'Valid' -or $null -eq $s.TimeStamperCertificate) { throw "${what}: $($s.Status) $($s.StatusMessage)" }
+            Write-Host "  ok   signed and timestamped: $what"
+          }
+          Assert-Signed (Join-Path $out "ghost-worker-$env:VERSION.msi") 'MSI'
+          Assert-Signed (Join-Path $out "ghost-worker-setup-$env:VERSION.exe") 'setup.exe'
+          # What the MSI installs: extract it (administrative install) and check each program.
+          $x = Join-Path $env:RUNNER_TEMP 'signcheck-extract'
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList '/a', "`"$out\ghost-worker-$env:VERSION.msi`"", '/qn', "TARGETDIR=`"$x`""
+          if ($p.ExitCode) { throw "msiexec /a exit code $($p.ExitCode)" }
+          $programs = @(Get-ChildItem $x -Recurse -Filter *.exe)
+          if ($programs.Count -lt 3) { throw "expected 3 programs inside the MSI, found $($programs.Count)" }
+          $programs | ForEach-Object { Assert-Signed $_.FullName "$($_.Name) inside the MSI" }
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

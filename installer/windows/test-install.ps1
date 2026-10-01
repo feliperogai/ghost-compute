@@ -4,7 +4,7 @@
   it is supposed to make, uninstalls it and checks that nothing is left.
   Run elevated. Used by CI (.github/workflows/installer.yml).
 #>
-param([Parameter(Mandatory)] [string] $Msi)
+param([Parameter(Mandatory)] [string] $Msi, [switch] $ExpectSigned)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -37,6 +37,13 @@ Check ($p.ExitCode -eq 0) "msiexec /i exit code 0 (got $($p.ExitCode))"
 # Files
 foreach ($f in 'ghost-agent.exe', 'ghost-sandbox.exe', 'ghost.exe', 'COMO-FUNCIONA.txt') {
   Check (Test-Path (Join-Path $prog $f)) "installed $f"
+}
+# Signed builds: every program and the MSI carry a valid Authenticode signature.
+if ($ExpectSigned) {
+  foreach ($f in @((Join-Path $prog 'ghost-agent.exe'), (Join-Path $prog 'ghost-sandbox.exe'), (Join-Path $prog 'ghost.exe'), $Msi)) {
+    $s = Get-AuthenticodeSignature $f
+    Check ($s.Status -eq 'Valid' -and $null -ne $s.TimeStamperCertificate) "signed and timestamped: $(Split-Path -Leaf $f) ($($s.Status))"
+  }
 }
 
 # Service: own virtual account, automatic (delayed), restarts on failure, running.
