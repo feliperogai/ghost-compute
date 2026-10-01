@@ -17,7 +17,7 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
-sysinfo = "0.38.4"
+sysinfo = "0.39.6"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "signal", "sync", "fs", "process", "io-util"] }
 tokio-util = "0.7.19"
@@ -31,7 +31,7 @@ wasmtime = { version = "48.0.3", default-features = false, features = ["cranelif
 webpki-roots = "1.0.9"
 # GPU compute for image-inference (DX12 on Windows, Vulkan elsewhere). Our shader only.
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "wgsl"], optional = true }
-pollster = { version = "0.4", optional = true }
+pollster = { version = "1.0", optional = true }
 bytemuck = { version = "1", optional = true }
 zeroize = "1.9.0"
 
