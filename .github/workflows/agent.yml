@@ -22,13 +22,14 @@ jobs:
       run:
         working-directory: ${{ matrix.crate }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Pinned: the embedded WebAssembly modules are hash-pinned, and their bytes depend
       # on the compiler; wasmtime 47 also needs this toolchain. Upgrade deliberately.
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@9376cdc5a5e25b16da71af47712785cf06b0d6d4 # 1.94.1 branch
         with:
+          toolchain: 1.94.1
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ matrix.crate }}
       - name: Software Vulkan (GPU path tests)

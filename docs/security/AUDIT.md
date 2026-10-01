@@ -332,12 +332,12 @@ Os dois riscos **críticos** encontrados (3 e 9) estão mitigados e testados. Os
   - **Novo:** workflow `security.yml` roda `cargo audit` em todos os `Cargo.lock` e `npm audit` (high) nos três pacotes, a cada mudança e toda semana. Os workflows existentes também rodam `npm audit`.
   - **Novo:** `permissions: contents: read` em todos os workflows (token de CI só leitura).
   - **Novo:** Dependabot para npm, cargo e GitHub Actions.
+  - **Novo:** GitHub Actions fixadas por SHA do commit (com a versão em comentário); uma tag movida por terceiros não muda o que roda no CI. O Dependabot atualiza SHA e comentário juntos.
   - **Novo:** `rustls-pemfile` (RUSTSEC-2025-0134, sem manutenção) removido; o parsing de PEM agora usa o próprio rustls.
 - **Estado na auditoria:**
   - `npm audit`: 0 vulnerabilidades em control-plane, dashboard e desktop.
   - `cargo audit`: 0 vulnerabilidades. Avisos restantes: crates sem manutenção no stack Linux do Tauri (glib, unic-*, proc-macro-error), fora do build Windows do app.
 - **Residual:**
-  - Ações do GitHub fixadas por tag, não por SHA. O Dependabot passa a atualizá-las; fixar por SHA é o próximo passo.
   - Binários ainda não são assinados (Authenticode).
   - **Médio.**
 
@@ -372,4 +372,4 @@ O item 5 (assinatura) continua pendente e depende de um certificado da organiza�
 | 6 | Sem MFA | OIDC com MFA |
 | 10 | DDoS volumétrico | CDN/WAF |
 | 12 | Provedor vê inputs | Documentado; computação confidencial está fora do escopo |
-| 16 | Ações por tag; binários sem assinatura | Fixar por SHA; assinatura de código |
+| 16 | Binários sem assinatura | Assinatura de código |
