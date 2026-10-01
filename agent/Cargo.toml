@@ -27,7 +27,7 @@ tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 url = "2.5.8"
 uuid = { version = "1.26.1", features = ["v4", "serde"] }
-wasmtime = { version = "47", default-features = false, features = ["cranelift", "runtime", "std", "anyhow"] }
+wasmtime = { version = "48.0.3", default-features = false, features = ["cranelift", "runtime", "std", "anyhow"] }
 webpki-roots = "1.0.9"
 # GPU compute for image-inference (DX12 on Windows, Vulkan elsewhere). Our shader only.
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "wgsl"], optional = true }

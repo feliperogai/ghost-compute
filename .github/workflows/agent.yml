@@ -23,11 +23,12 @@ jobs:
         working-directory: ${{ matrix.crate }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # Pinned: the embedded WebAssembly modules are hash-pinned, and their bytes depend
-      # on the compiler; wasmtime 47 also needs this toolchain. Upgrade deliberately.
+      # Pinned per crate (its rust-toolchain.toml). The embedded WebAssembly modules are
+      # hash-pinned and their bytes depend on the compiler, so workloads stay on 1.94.1;
+      # the agent is on 1.95.0, which wasmtime 48 needs. Upgrade deliberately.
       - uses: dtolnay/rust-toolchain@9376cdc5a5e25b16da71af47712785cf06b0d6d4 # 1.94.1 branch
         with:
-          toolchain: 1.94.1
+          toolchain: ${{ matrix.crate == 'agent' && '1.95.0' || '1.94.1' }}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:

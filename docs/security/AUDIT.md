@@ -325,7 +325,8 @@ Os dois riscos **críticos** encontrados (3 e 9) estão mitigados e testados. Os
 - **Probabilidade:** média.
 - **Mitigação:**
   - Lockfiles com `npm ci`.
-  - Toolchain Rust fixada (1.94.1).
+  - Toolchain Rust fixada: 1.95.0 no agente, 1.94.1 nos workloads (bytes dos módulos WASM).
+  - **Novo:** wasmtime 48.0.3, com as correções de RUSTSEC-2026-0315 (amplificação de fuel por `call_ref`/`catch`) e RUSTSEC-2026-0316 (alocação além do limite de fuel).
   - Módulos WASM fixados por SHA-256, com build reproduzível verificado no CI.
   - Sem OpenSSL (rustls).
   - Nenhum auto-update implementado, portanto nenhum canal de update para atacar.
