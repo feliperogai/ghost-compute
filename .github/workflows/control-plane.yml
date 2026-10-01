@@ -2,9 +2,9 @@ name: control-plane
 
 on:
   push:
-    paths: ["control-plane/**", "workloads/image-inference/testdata/**", ".github/workflows/control-plane.yml"]
+    paths: ["control-plane/**", "dashboard/**", "workloads/image-inference/testdata/**", ".github/workflows/control-plane.yml"]
   pull_request:
-    paths: ["control-plane/**", "workloads/image-inference/testdata/**", ".github/workflows/control-plane.yml"]
+    paths: ["control-plane/**", "dashboard/**", "workloads/image-inference/testdata/**", ".github/workflows/control-plane.yml"]
 
 # Least privilege for the workflow token (read the code, nothing else).
 permissions:
@@ -41,3 +41,10 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+
+  # The server install guide on the real image: compose up, create-admin, API, dashboard.
+  compose-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: control-plane/scripts/compose-smoke.sh

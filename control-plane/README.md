@@ -18,6 +18,8 @@ npm run dev
 
 Tudo em Docker: `WORKER_TOKEN_SECRET=... docker compose up --build`.
 
+Teste de fumaça da imagem (o passo 1 do guia de instalação, ponta a ponta): `scripts/compose-smoke.sh`.
+
 ## Testes
 
 Precisam de Postgres e Redis locais (`docker compose up -d postgres redis`).
