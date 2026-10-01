@@ -49,14 +49,14 @@
       {
         "freeMb": 23,
         "kind": "HDD",
-        "mount": "/opt/claude-code",
+        "mount": "/mnt/data",
         "removable": false,
         "totalMb": 248
       },
       {
         "freeMb": 15,
         "kind": "HDD",
-        "mount": "/opt/env-runner",
+        "mount": "/mnt/backup",
         "removable": false,
         "totalMb": 46
       }
