@@ -1,12 +1,13 @@
 // Security controls against malicious providers, customers and workers
 // (docs/security/AUDIT.md). HTTP-level controls: security-http.test.ts.
 import { createHash } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CAPACITY, HW, auth, heartbeat, registerWorker, reset, setup, type Harness, type TestWorker } from './helpers.js';
 import { createUserWithToken } from '../src/modules/admin/service.js';
 import { createEngine } from '../src/jobs/runner.js';
 import { resultsAgree, verdict, CONFIDENCE_TOLERANCE_BP } from '../src/jobs/verification.js';
 import { networkPrefix } from '../src/jobs/network.js';
+import { drawSpotCheck } from '../src/jobs/spot-check.js';
 
 const sha = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 
@@ -328,6 +329,97 @@ describe('colluding providers', () => {
     } finally {
       h.rt.config.REQUIRE_TRUSTED_REPLICA = false;
     }
+  });
+
+  describe('spot checks (TRUSTED_SPOT_CHECK_PERCENT)', () => {
+    beforeEach(() => {
+      h.rt.config.TRUSTED_SPOT_CHECK_PERCENT = 100;
+    });
+    afterEach(() => {
+      h.rt.config.TRUSTED_SPOT_CHECK_PERCENT = 0;
+    });
+    const spotChecked = async (jobId: string) =>
+      (await h.rt.db.query(`SELECT trusted_check FROM jobs WHERE id = $1`, [jobId])).rows[0].trusted_check as boolean;
+
+    it('a drawn job is verified by a staff computer, and the liar it catches is recorded for review', async () => {
+      const [p0, p1] = await market(2);
+      const c = await signup('c@ex.test');
+      const j = (await job(c.token)).json();
+      expect(await spotChecked(j.id)).toBe(true);
+      expect(JSON.stringify(await getJob(c.token, j.id))).not.toMatch(/trusted|spot/i); // never shown
+      const engine = createEngine(h.rt);
+      await engine.tick();
+      const liar = (await getJob(c.token, j.id)).workerId === p0!.w.id ? p0! : p1!;
+      await answer(liar.w, out('bad0'));
+      const staff = await registerWorker(h, { name: 'trusted' }); // enrolled by an admin
+      await heartbeat(h, staff);
+      await engine.tick();
+      // The accomplice is not asked: the staff computer is online, so it verifies.
+      expect((await getJob(c.token, j.id)).workerId).toBe(staff.id);
+      const decisions = (await req('GET', `/v1/jobs/${j.id}/decisions`, h.adminToken)).json().items;
+      expect(decisions.at(-1).explanation.rejected).toMatchObject({ UNTRUSTED_VERIFIER: 1 });
+      await answer(staff, out('00a8'));
+      expect(await getJob(c.token, j.id)).toMatchObject({ status: 'COMPLETED', output: out('00a8') });
+      expect(await walletOf(liar.token, liar.w.id)).toBe(0);
+
+      const caught = (await req('GET', '/v1/admin/audit?action=verification.contradicted', h.adminToken)).json().items;
+      expect(caught).toHaveLength(1);
+      expect(caught[0]).toMatchObject({ target: { type: 'worker', id: liar.w.id }, details: { jobId: j.id, spotCheck: true } });
+      expect((await req('GET', '/v1/admin/audit', liar.token)).statusCode).toBe(403);
+    });
+
+    it('with no staff computer online, verification proceeds as usual (no wait)', async () => {
+      const [p0, p1] = await market(2);
+      const c = await signup('c@ex.test');
+      const j = (await job(c.token)).json();
+      expect(await spotChecked(j.id)).toBe(true);
+      const engine = createEngine(h.rt);
+      await engine.tick();
+      const first = (await getJob(c.token, j.id)).workerId === p0!.w.id ? p0! : p1!;
+      const second = first === p0 ? p1! : p0!;
+      await answer(first.w, out('00a8'));
+      await engine.tick();
+      await answer(second.w, out('00a8'));
+      expect(await getJob(c.token, j.id)).toMatchObject({ status: 'COMPLETED', output: out('00a8') });
+    });
+
+    it('waits for a staff computer that cannot take the job only up to TRUSTED_SPOT_CHECK_WAIT_SECONDS', async () => {
+      const [p0, p1] = await market(2);
+      const staff = await registerWorker(h, { name: 'trusted' });
+      await heartbeat(h, staff, { workloadTypes: ['image-inference'] }); // online, but not for this job
+      const c = await signup('c@ex.test');
+      const j = (await job(c.token)).json();
+      const engine = createEngine(h.rt);
+      await engine.tick();
+      const first = (await getJob(c.token, j.id)).workerId === p0!.w.id ? p0! : p1!;
+      const second = first === p0 ? p1! : p0!;
+      const a = await answer(first.w, out('00a8'));
+      await engine.tick();
+      expect(await getJob(c.token, j.id)).toMatchObject({ status: 'QUEUED', pendingReason: expect.stringContaining('UNTRUSTED_VERIFIER') });
+      await h.rt.db.query(`UPDATE job_assignments SET finished_at = now() - make_interval(secs => $2) WHERE id = $1`, [
+        a.assignmentId,
+        h.rt.config.TRUSTED_SPOT_CHECK_WAIT_SECONDS + 1,
+      ]);
+      await engine.tick();
+      expect((await getJob(c.token, j.id)).workerId).toBe(second.w.id);
+      await answer(second.w, out('00a8'));
+      expect((await getJob(c.token, j.id)).status).toBe('COMPLETED');
+    });
+
+    it('the draw follows TRUSTED_SPOT_CHECK_PERCENT', () => {
+      const count = (percent: number, n: number) => Array.from({ length: n }, () => drawSpotCheck(percent)).filter(Boolean).length;
+      expect(count(0, 500)).toBe(0);
+      expect(count(100, 500)).toBe(500);
+      expect(count(25, 4000)).toBeGreaterThan(800); // mean 1000, sd ≈ 27
+      expect(count(25, 4000)).toBeLessThan(1200);
+    });
+
+    it('only verified jobs are drawn; TRUSTED_SPOT_CHECK_PERCENT=0 draws none', async () => {
+      const c = await signup('c@ex.test');
+      expect(await spotChecked((await job(c.token, { verification: 'none' })).json().id)).toBe(false);
+      h.rt.config.TRUSTED_SPOT_CHECK_PERCENT = 0;
+      for (let i = 0; i < 5; i++) expect(await spotChecked((await job(c.token)).json().id)).toBe(false);
+    });
   });
 });
 

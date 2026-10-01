@@ -38,4 +38,39 @@ export const adminRoutes =
       },
       async (req, reply) => reply.status(201).send(await createEnrollmentToken(ctx, req.body, userId(req))),
     );
+
+    // Security review, newest first: e.g. action=verification.contradicted lists computers a
+    // trusted computer caught returning a different answer.
+    app.get(
+      '/v1/admin/audit',
+      {
+        onRequest: requireUser(ctx, 'admin'),
+        schema: {
+          querystring: z.object({
+            action: z.string().min(1).max(100).optional(),
+            targetId: z.uuid().optional(),
+            limit: z.coerce.number().int().min(1).max(500).default(100),
+          }),
+        },
+      },
+      async (req) => {
+        const q = req.query;
+        const { rows } = await ctx.db.query(
+          `SELECT id, ts, actor_type, actor_id, action, target_type, target_id, details FROM audit_log
+            WHERE ($1::text IS NULL OR action = $1) AND ($2::uuid IS NULL OR target_id = $2)
+            ORDER BY id DESC LIMIT $3`,
+          [q.action ?? null, q.targetId ?? null, q.limit],
+        );
+        return {
+          items: rows.map((r) => ({
+            id: Number(r.id),
+            at: r.ts.toISOString(),
+            actor: { type: r.actor_type, id: r.actor_id },
+            action: r.action,
+            target: r.target_type ? { type: r.target_type, id: r.target_id } : null,
+            details: r.details,
+          })),
+        };
+      },
+    );
   };

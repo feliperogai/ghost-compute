@@ -88,6 +88,7 @@ Os dois riscos **críticos** encontrados (3 e 9) estão mitigados e testados. Os
   - **Isolamento das réplicas:** uma réplica nunca vê o resultado nem o checkpoint de outra.
   - **Quem perdeu:** não recebe, e conta como falha na reputação.
   - **`REQUIRE_TRUSTED_REPLICA=true`:** a réplica de verificação precisa rodar num computador da equipe (admin/operator), e o resultado dela decide. Isso derrota o conluio de contas que estão em redes diferentes.
+  - **Novo: verificação aleatória (`TRUSTED_SPOT_CHECK_PERCENT`, padrão 10%).** Uma parte dos jobs verificados é sorteada na criação (RNG criptográfico, nunca mostrado a provedores) e a réplica de verificação dela vai para um computador da equipe, cujo resultado decide. Quem ele contradiz não recebe, perde reputação e vai para o log de auditoria (`verification.contradicted`, em `GET /v1/admin/audit`) para revisão. O job só espera por um computador da equipe enquanto houver um online, e no máximo `TRUSTED_SPOT_CHECK_WAIT_SECONDS` (padrão 600); sem nenhum, a verificação segue normal e nada atrasa.
   - **Enrolação:** cada réplica recebe no máximo 2× o tempo da réplica mais rápida que concordou, mais 30 s.
   - **"Job inválido":** em job verificado, essa alegação passa por uma segunda opinião. A falha só pesa na reputação se outro computador concluir o job.
 - **Testes** (`security.test.ts`):
@@ -97,12 +98,14 @@ Os dois riscos **críticos** encontrados (3 e 9) estão mitigados e testados. Os
   - *one owner cannot confirm itself*;
   - *two accounts behind one connection…*;
   - *REQUIRE_TRUSTED_REPLICA…*;
+  - *spot checks…* (sorteio, conluio pego e registrado, sem espera sem computador da equipe, limite de espera);
+  - `scheduler-engine.test.ts` › *spot checks wait for a trusted computer only while one is online…*;
   - *stalling…*;
   - *second opinion…*;
   - *fails everywhere…*;
   - *a replica never sees…*;
   - testes puros de `resultsAgree`, `verdict` e `networkPrefix`.
-- **Residual:** sem `REQUIRE_TRUSTED_REPLICA`, duas contas em redes diferentes, controladas pela mesma pessoa, ainda podem confirmar uma mentira se ambas forem escolhidas para o mesmo job. **Médio.** Com o modo confiável ligado, cai para **Baixo**.
+- **Residual:** sem `REQUIRE_TRUSTED_REPLICA`, duas contas em redes diferentes, controladas pela mesma pessoa, ainda podem confirmar uma mentira nos jobs que não foram sorteados, se ambas forem escolhidas para o mesmo job. Com computadores da equipe online, cada mentira tem `TRUSTED_SPOT_CHECK_PERCENT` de chance de ser pega e registrada, e quem é pego perde o pagamento e a reputação: mentir deixa de compensar. **Baixo** com computadores da equipe online; **Médio** sem nenhum. Com o modo confiável ligado, **Baixo**.
 
 ## 4. Cliente malicioso
 
@@ -357,7 +360,7 @@ Mesmo assim, a abertura depende destas condições de **implantação**. Elas n�
 
 1. **Terminação TLS** num proxy, com `TRUST_PROXY` = o IP ou CIDR do proxy e `REQUIRE_TLS=true`.
 2. **Proteção volumétrica** (CDN ou proxy com limite por IP) na frente da API.
-3. **`REQUIRE_TRUSTED_REPLICA=true`**, com capacidade da própria plataforma online. Recomendado para a abertura; sem isso, o conluio entre contas em redes diferentes fica em risco Médio.
+3. **Computadores da equipe online** (de contas admin/operator), para a verificação aleatória (`TRUSTED_SPOT_CHECK_PERCENT`, ligada por padrão) ter quem verifique. Sem nenhum, o conluio entre contas em redes diferentes fica em risco Médio. `REQUIRE_TRUSTED_REPLICA=true` verifica todos os jobs, se houver capacidade para isso.
 4. **Windows:** regra de firewall que bloqueia a saída de rede do `ghost-sandbox.exe`, para fechar o residual dos itens 5 e 15. **Feito:** o instalador cria a regra e o CI confere ([installer/windows](../../installer/windows/README.md)).
 5. **Binários assinados** (Authenticode) antes da distribuição pública.
 6. **Aviso aos clientes:** provedores veem os inputs; dados sensíveis não devem ser enviados.
@@ -368,7 +371,7 @@ O item 5 (assinatura) continua pendente e depende de um certificado da organiza�
 
 | Ameaça | Residual | Próximo passo |
 |---|---|---|
-| 3 | Conluio de contas em redes diferentes (sem o modo confiável) | Verificação aleatória por computadores confiáveis |
+| 3 | Conluio de contas em redes diferentes, sem computadores da equipe online | Manter computadores da equipe online (verificação aleatória) ou `REQUIRE_TRUSTED_REPLICA=true` |
 | 5 / 15 | Windows sem AppContainer: um escape teria rede e arquivos do usuário | Criar o sandbox com AppContainer ou token restrito; firewall no instalador |
 | 6 | Sem MFA | OIDC com MFA |
 | 10 | DDoS volumétrico | CDN/WAF |

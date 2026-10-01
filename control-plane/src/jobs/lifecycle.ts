@@ -12,6 +12,7 @@ import { validateCheckpoint } from '../inference/schemas.js';
 import { CalibrationService } from '../performance/service.js';
 import { settleJob } from '../credits/service.js';
 import { verdict } from './verification.js';
+import { audit } from '../audit.js';
 import { owedSql } from '../credits/owed.js';
 import { maxAttemptCost, normalizeOffer, priceRate } from '../market/offer.js';
 
@@ -52,6 +53,8 @@ interface JobRow {
   /** Millicredits (bigint → string); null for jobs created before budgets. */
   budget: string | null;
   verification: 'none' | 'replicate';
+  /** Spot-checked: its verification replica waits for a trusted computer (when one is online). */
+  trusted_check: boolean;
 }
 
 interface AssignmentRow {
@@ -312,8 +315,8 @@ export class JobLifecycle {
    * MAX_REPLICAS, after which the job fails with RESULT_MISMATCH and nobody is paid.
    */
   private async verifyReplicas(c: pg.PoolClient, job: JobRow, a: AssignmentRow, sha: string): Promise<After> {
-    const { rows } = await c.query<{ id: string; owner_user_id: string | null; output: unknown; trusted: boolean | null }>(
-      `SELECT x.id, w.owner_user_id, x.output, u.role IN ('admin', 'operator') AS trusted
+    const { rows } = await c.query<{ id: string; worker_id: string; owner_user_id: string | null; output: unknown; trusted: boolean | null }>(
+      `SELECT x.id, x.worker_id, w.owner_user_id, x.output, u.role IN ('admin', 'operator') AS trusted
          FROM job_assignments x JOIN workers w ON w.id = x.worker_id LEFT JOIN users u ON u.id = w.owner_user_id
         WHERE x.job_id = $1 AND x.status = 'completed' ORDER BY x.attempt`,
       [job.id],
@@ -329,6 +332,16 @@ export class JobLifecycle {
       if (v.disagreed.length)
         await c.query(`UPDATE job_assignments SET verdict = 'disagreed' WHERE id = ANY($1::uuid[])`, [v.disagreed]);
       const win = rows.find((r) => r.id === v.winner)!;
+      // A staff computer contradicted these: evidence of a wrong or forged result, kept for review.
+      if (win.trusted)
+        for (const id of v.disagreed)
+          await audit(c, {
+            actorType: 'system',
+            action: 'verification.contradicted',
+            targetType: 'worker',
+            targetId: rows.find((r) => r.id === id)!.worker_id,
+            details: { jobId: job.id, assignmentId: id, judgeAssignmentId: win.id, spotCheck: job.trusted_check },
+          });
       const winSha = sha256Hex(JSON.stringify(win.output));
       await this.finishCompleted(c, job, win.output, winSha);
       await event(c, job.id, a.id, a.worker_id, 'job.completed', {

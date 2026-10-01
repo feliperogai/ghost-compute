@@ -10,6 +10,8 @@ export interface EligibilityOptions {
   offlineAfterMs: number;
   /** Stay this far below the owner's temperature limit when placing new work. */
   thermalMarginC: number;
+  /** A trusted computer is online and taking work (spot checks wait for it). */
+  trustedOnline?: boolean;
 }
 
 export interface Available {
@@ -39,16 +41,25 @@ const osOf = (w: WorkerSnapshot) => {
   return undefined;
 };
 
+const isOffline = (w: WorkerSnapshot, o: EligibilityOptions) =>
+  !w.lastSeenAt || o.now.getTime() - w.lastSeenAt.getTime() > o.offlineAfterMs;
+const isAccepting = (w: WorkerSnapshot) => w.state === 'available' || w.state === 'running';
+
+/** A trusted computer is online and taking work from the market: spot-checked jobs wait for one. */
+export function trustedOnline(workers: WorkerSnapshot[], o: EligibilityOptions): boolean {
+  return workers.some((w) => w.trusted === true && !isOffline(w, o) && isAccepting(w) && (w.offer ?? DEFAULT_OFFER).listed);
+}
+
 /** Returns null when eligible, otherwise the first failing reason. */
 export function ineligibility(job: JobSpec, w: WorkerSnapshot, o: EligibilityOptions): IneligibleReason | null {
-  if (!w.lastSeenAt || o.now.getTime() - w.lastSeenAt.getTime() > o.offlineAfterMs) return 'OFFLINE';
-  if (w.state !== 'available' && w.state !== 'running') return 'NOT_ACCEPTING';
+  if (isOffline(w, o)) return 'OFFLINE';
+  if (!isAccepting(w)) return 'NOT_ACCEPTING';
   if (job.excludedWorkers.includes(w.id)) return 'EXCLUDED';
   // Replicas must come from different people: one owner cannot confirm itself.
   if (w.ownerId && job.excludedOwners?.includes(w.ownerId)) return 'EXCLUDED';
   // ...and from different networks: two accounts behind one connection are one party.
   if (w.network && job.excludedNetworks?.includes(w.network)) return 'EXCLUDED';
-  if (job.needsTrusted && !w.trusted) return 'UNTRUSTED_VERIFIER';
+  if ((job.needsTrusted || (job.trustedCheck && o.trustedOnline)) && !w.trusted) return 'UNTRUSTED_VERIFIER';
   if (!w.capacity) return 'NO_CAPACITY_REPORTED';
   if (!w.workloadTypes.includes(job.type)) return 'TYPE_UNSUPPORTED';
   if (w.activeAssignments >= w.maxConcurrent) return 'NO_SLOTS';

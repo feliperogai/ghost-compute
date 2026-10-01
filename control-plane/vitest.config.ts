@@ -13,6 +13,8 @@ export default defineConfig({
       REDIS_URL: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379/15',
       WORKER_TOKEN_SECRET: 'test-secret-test-secret-test-secret-1234',
       SCHEDULER_ENABLED: 'false',
+      // Spot checks are drawn at random; the tests that need them turn them on.
+      TRUSTED_SPOT_CHECK_PERCENT: '0',
     },
   },
 });

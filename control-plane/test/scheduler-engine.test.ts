@@ -113,6 +113,30 @@ describe('SchedulerEngine', () => {
     expect(warnings[0]).toMatchObject({ why: 'INSUFFICIENT_CPU', strategy: 'broken' });
   });
 
+  it('spot checks wait for a trusted computer only while one is online to take them', async () => {
+    const spot = { ...job('s'), trustedCheck: true };
+    const run = async (ws: WorkerSnapshot[]) => {
+      const store = new MemoryStore([spot], ws);
+      await new SchedulerEngine(store, store, weightedStrategy(), opts).tick();
+      return store;
+    };
+    const trusted = { ...worker('t'), trusted: true };
+    // Online: only the trusted computer may verify.
+    expect((await run([worker('u'), trusted])).assigned.map((a) => a.workerId)).toEqual(['t']);
+    // Online but busy: the job waits for it.
+    const busy = await run([worker('u'), { ...trusted, activeAssignments: 4 }]);
+    expect(busy.assigned).toEqual([]);
+    expect(busy.pending.get('s')).toContain('UNTRUSTED_VERIFIER');
+    // None online (offline, not taking work, off the market): verified as usual, no wait.
+    const unlisted = { ...trusted, offer: { listed: false, price: { cpuCore: 1, ramGb: 1, gpu: 1, vramGb: 1 }, availability: { timezone: 'UTC', windows: [] }, limits: {} } };
+    for (const away of [{ ...trusted, lastSeenAt: new Date(now.getTime() - 60_000) }, { ...trusted, state: 'waiting' as const }, unlisted])
+      expect((await run([worker('u'), away])).assigned.map((a) => a.workerId)).toEqual(['u']);
+    // Not spot-checked: never waits for the trusted computer.
+    const store = new MemoryStore([job('n')], [worker('u'), { ...trusted, activeAssignments: 4 }]);
+    await new SchedulerEngine(store, store, weightedStrategy(), opts).tick();
+    expect(store.assigned.map((a) => a.workerId)).toEqual(['u']);
+  });
+
   it('does nothing when the queue is empty', async () => {
     const store = new MemoryStore([], [worker('w1')]);
     expect(await new SchedulerEngine(store, store, weightedStrategy(), opts).tick()).toMatchObject({ considered: 0, assigned: 0 });
