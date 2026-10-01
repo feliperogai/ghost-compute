@@ -27,7 +27,10 @@ try {
     { email: email.data, role: 'admin', tokenName: 'bootstrap' },
     null,
   );
-  console.log(`admin user: ${userId}\napi token (shown once): ${token}\nexpires: ${expiresAt} (mint the next one with POST /v1/me/tokens)`);
+  console.log(
+    `admin user: ${userId}\napi token (shown once): ${token}\nexpires: ${expiresAt} (mint the next one with POST /v1/me/tokens)\n` +
+      'next: turn on two-step verification (sign in to /dashboard/, or POST /v1/me/mfa/totp)',
+  );
 } catch (err) {
   console.error((err as Error).message);
   process.exitCode = 1;

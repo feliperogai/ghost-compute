@@ -30,8 +30,19 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, signal?: AbortSignal): Promise<T> {
+  return request<T>(path, { signal });
+}
+
+/** Writes (two-step verification setup). */
+export async function send<T>(method: 'POST' | 'DELETE', path: string, body?: unknown): Promise<T> {
+  return request<T>(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+}
+
+async function request<T>(path: string, init: { method?: string; body?: string; signal?: AbortSignal | undefined }): Promise<T> {
   const token = getToken();
-  const res = await fetch(path, { headers: token ? { authorization: `Bearer ${token}` } : {}, signal });
+  const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
+  if (init.body !== undefined) headers['content-type'] = 'application/json';
+  const res = await fetch(path, { ...init, headers });
   if (!res.ok) {
     let body: { error?: { code?: string; message?: string; requestId?: string } } = {};
     try {

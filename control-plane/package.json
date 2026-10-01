@@ -8,6 +8,7 @@
     "start": "node dist/src/server.js",
     "migrate": "tsx src/db/migrate-cli.ts",
     "create-admin": "tsx src/cli/create-admin.ts",
+    "reset-mfa": "tsx src/cli/reset-mfa.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

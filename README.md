@@ -60,13 +60,15 @@ O Worker só conversa com `https://`. Sem isso o instalador recusa o endereço.
 
 ```bash
 cd control-plane
-export WORKER_TOKEN_SECRET=$(openssl rand -hex 32)   # guarde: trocar derruba os workers
+export WORKER_TOKEN_SECRET=$(openssl rand -hex 32)   # guarde: trocar derruba os workers e a verificação em 2 etapas
 export POSTGRES_PASSWORD=$(openssl rand -hex 16)     # guarde: vale só na criação do banco
 docker compose up -d --build                        # Postgres + Redis + API na porta 8080
 docker compose exec control-plane node dist/src/cli/create-admin.js voce@exemplo.com
 # → "api token (shown once): ghu_..."  guarde este token
 # → "expires: ..."  vale 90 dias (STAFF_TOKEN_TTL_DAYS); antes disso, crie o próximo com POST /v1/me/tokens
 ```
+
+**Verificação em duas etapas (obrigatória para a equipe).** Abra `https://ghost.seudominio.com/dashboard/`, entre com o `ghu_...` e siga a tela: leia o QR code com um app autenticador (Google Authenticator, Microsoft Authenticator, Authy…) e digite o código. Até isso, a conta da equipe só acessa a própria página. Depois, ações que criam credenciais ou créditos (tokens, usuários, códigos de conexão, concessão de créditos) pedem o código atual do app no header `x-ghost-otp`. Perdeu o celular? No servidor: `docker compose exec control-plane node dist/src/cli/reset-mfa.js voce@exemplo.com`.
 
 Coloque um proxy HTTPS na frente da porta 8080 (ex.: Caddy: `ghost.seudominio.com { reverse_proxy localhost:8080 }`).
 Com proxy (um salto): `TRUST_PROXY=1 REQUIRE_TLS=true docker compose up -d`.
@@ -81,11 +83,12 @@ Uso único, vale 1 hora por padrão. Um por computador.
 
 ```bash
 curl -X POST https://ghost.seudominio.com/v1/provider/enrollment-tokens \
-  -H "authorization: Bearer ghu_..." -H 'content-type: application/json' -d '{"note":"PC da sala"}'
-# → {"token":"ghe_...", "expiresAt": ...}
+  -H "authorization: Bearer ghu_..." -H "x-ghost-otp: 123456" \
+  -H 'content-type: application/json' -d '{"note":"PC da sala"}'
+# → {"token":"ghe_...", "expiresAt": ...}     (x-ghost-otp: o código que o app autenticador mostra agora)
 ```
 
-Pode pular: depois dá para conectar pelo app, colando o `ghu_...` (usado uma vez, nunca guardado).
+Pode pular: depois dá para conectar pelo app, colando o `ghu_...` (usado uma vez, nunca guardado). Contas com verificação em duas etapas (toda a equipe) usam o código `ghe_...`.
 
 ### 3. Baixar o instalador
 
@@ -130,7 +133,7 @@ No PC: ícone do **ghost** perto do relógio. Abra o painel.
 
 ### 6. Conectar pelo app (se não usou código na instalação)
 
-Painel → tela **Conectar** → cole `ghe_...` ou `ghu_...`. Conectar **não** liga o compartilhamento.
+Painel → tela **Conectar** → cole `ghe_...` ou `ghu_...` (`ghu_` só para contas sem verificação em duas etapas). Conectar **não** liga o compartilhamento.
 
 ### 7. Ligar, pausar, parar
 

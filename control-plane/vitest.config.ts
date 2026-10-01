@@ -15,6 +15,8 @@ export default defineConfig({
       SCHEDULER_ENABLED: 'false',
       // Spot checks are drawn at random; the tests that need them turn them on.
       TRUSTED_SPOT_CHECK_PERCENT: '0',
+      // Staff must turn on two-step verification by default; the MFA tests turn it on.
+      REQUIRE_STAFF_MFA: 'false',
     },
   },
 });

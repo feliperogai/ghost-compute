@@ -76,7 +76,7 @@ export function Connect({ api, reason }: { api: AgentApi; reason: string }) {
           </li>
           <li>
             <b>Token da conta</b> (<code>ghu_…</code>): usado só agora, para pedir um código para este computador. Não
-            fica salvo aqui.
+            fica salvo aqui. Se a conta usa verificação em duas etapas, use um código de conexão.
           </li>
           <li>
             Conectar <b>não liga</b> o compartilhamento. Depois de conectado, nada roda até você clicar em{' '}

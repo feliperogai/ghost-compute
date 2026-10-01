@@ -13,6 +13,7 @@ docker compose up -d postgres redis
 npm ci
 npm run migrate
 npm run create-admin -- admin@example.com  # imprime o token uma única vez
+# depois: ligue a verificação em duas etapas em http://localhost:8080/dashboard/ (obrigatória para a equipe)
 npm run dev
 ```
 
@@ -67,6 +68,7 @@ Estados: `QUEUED → ASSIGNED → RUNNING → COMPLETED | FAILED | TIMEOUT`, e `
 | Quem | Como |
 |---|---|
 | Usuário | `Authorization: Bearer ghu_…` (token de API; só o hash é salvo). Papéis: `member` (conta pública: só os próprios dados) < `viewer` < `operator` < `admin` (equipe). |
+| Segundo fator | Verificação em duas etapas (TOTP, RFC 6238), obrigatória para a equipe (`REQUIRE_STAFF_MFA`, padrão `true`) e opcional para contas públicas. Ligada, criar tokens, usuários, códigos de conexão e conceder créditos pedem o código do app em `x-ghost-otp`; cada código vale uma vez; 5 erros bloqueiam por 15 min. Segredo cifrado (AES-256-GCM, chave derivada de `WORKER_TOKEN_SECRET`). Recuperação no servidor: `npm run reset-mfa -- email`. |
 | Worker (registro) | Token de enrollment `ghe_…` de uso único, gerado por admin, com TTL. |
 | Worker (sessão) | `POST /v1/workers/auth` com `workerId` + `workerSecret` (`ghw_…`) → token HMAC `v1.…` de curta duração. Revogação checada em toda requisição. |
 
@@ -78,9 +80,12 @@ Rate limit global por credencial (ou IP) em toda a API, `RATE_LIMIT_PER_MINUTE`;
 |---|---|---|---|
 | POST | `/v1/signup` | — | conta pública `member` + token (limite por IP; `OPEN_SIGNUP`, `SIGNUP_CREDITS`) — [ADR 008](../docs/adr/008-open-platform.md) |
 | GET | `/v1/me` · `/v1/me/tokens` | member | conta; tokens (validade, último uso) |
-| POST · DELETE | `/v1/me/tokens` · `/v1/me/tokens/:id` | member | criar token (validade máxima `MEMBER_TOKEN_TTL_DAYS`; equipe: `STAFF_TOKEN_TTL_DAYS`) · revogar |
-| POST | `/v1/admin/users` | admin | cria usuário + token |
-| POST | `/v1/admin/enrollment-tokens` | admin | token de registro de Worker |
+| POST · DELETE | `/v1/me/tokens` · `/v1/me/tokens/:id` | member | criar token (validade máxima `MEMBER_TOKEN_TTL_DAYS`; equipe: `STAFF_TOKEN_TTL_DAYS`; `x-ghost-otp` se a conta usa 2 etapas) · revogar |
+| GET | `/v1/me/mfa` | member | verificação em duas etapas: ligada? |
+| POST | `/v1/me/mfa/totp` · `/v1/me/mfa/totp/confirm` | member | ligar: segredo + link `otpauth://` (QR code) · confirmar com `{"code":"123456"}` |
+| DELETE | `/v1/me/mfa/totp` | member | desligar (`x-ghost-otp`), p.ex. para trocar de celular |
+| POST | `/v1/admin/users` | admin | cria usuário + token (`x-ghost-otp`) |
+| POST | `/v1/admin/enrollment-tokens` | admin | token de registro de Worker (`x-ghost-otp`) |
 | GET | `/v1/admin/audit` | admin | log de auditoria, mais recente primeiro (`action`, `targetId`, `limit`); `action=verification.contradicted` lista computadores pegos por um computador da equipe |
 | POST | `/v1/workers/register` | enrollment token | 1. registrar Worker |
 | POST | `/v1/workers/auth` | secret do worker | 2. autenticar Worker |
@@ -110,7 +115,7 @@ Rate limit global por credencial (ou IP) em toda a API, `RATE_LIMIT_PER_MINUTE`;
 | GET | `/v1/workers/:id/profile` | viewer | `WorkerPerformanceProfile`, resumo, throughput observado, histórico |
 | POST | `/v1/workers/:id/calibrate` | admin | forçar nova calibração |
 | GET | `/v1/dashboard/overview` · `/history?range=1h\|6h\|24h\|7d` · `/workers` · `/workers/:id` · `/errors` | viewer | observabilidade para o [painel](../dashboard/) (servido em `/dashboard/`) |
-| POST | `/v1/provider/enrollment-tokens` | member | token para registrar um computador próprio |
+| POST | `/v1/provider/enrollment-tokens` | member | token para registrar um computador próprio (`x-ghost-otp` se a conta usa 2 etapas) |
 | GET | `/v1/provider/workers` | member | meus computadores: estado, oferta, reputação, saldo |
 | GET · PUT | `/v1/provider/workers/:id/offer` | dono | preço (créditos/min por recurso), disponibilidade (janelas no fuso), limites, `listed` |
 | POST | `/v1/provider/workers/:id/revoke` | dono | tirar um computador da plataforma (roubado/comprometido) |
@@ -123,7 +128,7 @@ Rate limit global por credencial (ou IP) em toda a API, `RATE_LIMIT_PER_MINUTE`;
 | GET | `/v1/credits/spending` | viewer | custo de cada job: reservado, cobrado, devolvido, tentativas cobradas |
 | GET | `/v1/credits/workers/:id/wallet` · `/transactions` | dono ou admin | carteira de um worker |
 | POST | `/v1/credits/workers/:id/withdraw` | dono (operator) | ganhos do worker → carteira do dono (`amount`, `idempotencyKey`) |
-| POST | `/v1/credits/grants` | admin | conceder créditos (`userId`, `amount`, `reason`, `idempotencyKey`) |
+| POST | `/v1/credits/grants` | admin | conceder créditos (`userId`, `amount`, `reason`, `idempotencyKey`; `x-ghost-otp`) |
 | GET | `/v1/credits/ledger` · `/ledger/verify` · `/summary` | admin | ledger completo com hashes · recálculo de todos os invariantes · totais |
 | GET | `/healthz` · `/readyz` | — | liveness / readiness |
 

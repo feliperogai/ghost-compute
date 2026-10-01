@@ -31,6 +31,19 @@ async fn server() -> MockServer {
         )
         .mount(&s)
         .await;
+    // Accounts with two-step verification (and staff that still have to turn it on).
+    for (token, status, code) in
+        [("Bearer ghu_mfa", 401, "MFA_REQUIRED"), ("Bearer ghu_staff_no_mfa", 403, "MFA_ENROLLMENT_REQUIRED")]
+    {
+        Mock::given(method("POST"))
+            .and(path("/v1/provider/enrollment-tokens"))
+            .and(header("authorization", token))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(json!({ "error": { "code": code, "message": "x" } })),
+            )
+            .mount(&s)
+            .await;
+    }
     for ok in ["ghe_valid", "ghe_from_account", "ghe_installer"] {
         Mock::given(method("POST"))
             .and(path("/v1/workers/register"))
@@ -132,6 +145,11 @@ async fn not_connected_until_the_owner_signs_in_from_the_desktop_app() {
     assert!(used.starts_with("REFUSED") && used.contains("inválido"), "{used}");
     let bad_account = c.call(methods::ENROLL, json!({ "token": "ghu_wrong" })).await.unwrap_err().to_string();
     assert!(bad_account.starts_with("REFUSED"), "{bad_account}");
+    // Two-step verification: told what to do instead ("token inválido" would mislead).
+    let mfa = c.call(methods::ENROLL, json!({ "token": "ghu_mfa" })).await.unwrap_err().to_string();
+    assert!(mfa.starts_with("MFA_REQUIRED") && mfa.contains("ghe_"), "{mfa}");
+    let setup = c.call(methods::ENROLL, json!({ "token": "ghu_staff_no_mfa" })).await.unwrap_err().to_string();
+    assert!(setup.starts_with("MFA_ENROLLMENT_REQUIRED") && setup.contains("painel"), "{setup}");
 
     // Signing in with the account token: the agent asks for a code for this computer.
     let ok = c.call(methods::ENROLL, json!({ "token": "ghu_account" })).await.unwrap();

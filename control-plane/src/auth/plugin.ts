@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest, onRequestAsyncHookHandler } from 'fastify';
 import type { AppContext } from '../context.js';
-import { forbidden, unauthorized } from '../errors.js';
+import type { Config } from '../config.js';
+import { AppError, forbidden, unauthorized } from '../errors.js';
 import { hashSecret, hasPrefix, verifyWorkerToken } from './crypto.js';
 
 /**
@@ -14,8 +15,21 @@ const RANK: Record<Role, number> = { member: 0, viewer: 1, operator: 2, admin: 3
 export const isStaff = (role: Role) => RANK[role] >= RANK.viewer;
 
 export type Principal =
-  | { kind: 'user'; userId: string; role: Role; tokenId: string }
+  | {
+      kind: 'user';
+      userId: string;
+      role: Role;
+      tokenId: string;
+      /** Two-step verification (TOTP) is on for this account. */
+      mfa: boolean;
+    }
   | { kind: 'worker'; workerId: string };
+
+/** REQUIRE_STAFF_MFA: staff without two-step verification may only use their account page to turn it on. */
+export const mustEnroll = (config: Pick<Config, 'REQUIRE_STAFF_MFA'>, p: Principal) =>
+  p.kind === 'user' && config.REQUIRE_STAFF_MFA && isStaff(p.role) && !p.mfa;
+export const mfaEnrollmentRequired = () =>
+  new AppError(403, 'MFA_ENROLLMENT_REQUIRED', 'Turn on two-step verification first: POST /v1/me/mfa/totp');
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -32,8 +46,8 @@ export function bearer(req: FastifyRequest): string | null {
 
 export async function resolveUserToken(ctx: AppContext, token: string): Promise<Principal | null> {
   if (!hasPrefix(token, 'user')) return null;
-  const { rows } = await ctx.db.query<{ token_id: string; user_id: string; role: Role }>(
-    `SELECT t.id AS token_id, u.id AS user_id, u.role
+  const { rows } = await ctx.db.query<{ token_id: string; user_id: string; role: Role; mfa: boolean }>(
+    `SELECT t.id AS token_id, u.id AS user_id, u.role, u.totp_enabled_at IS NOT NULL AS mfa
        FROM api_tokens t JOIN users u ON u.id = t.user_id
       WHERE t.token_hash = $1 AND t.revoked_at IS NULL
         AND (t.expires_at IS NULL OR t.expires_at > now()) AND u.disabled_at IS NULL`,
@@ -49,7 +63,7 @@ export async function resolveUserToken(ctx: AppContext, token: string): Promise<
       [row.token_id],
     )
     .catch(() => {});
-  return { kind: 'user', userId: row.user_id, role: row.role, tokenId: row.token_id };
+  return { kind: 'user', userId: row.user_id, role: row.role, tokenId: row.token_id, mfa: row.mfa };
 }
 
 export async function resolveWorkerToken(ctx: AppContext, token: string): Promise<Principal | null> {
@@ -60,12 +74,18 @@ export async function resolveWorkerToken(ctx: AppContext, token: string): Promis
   return rows.length ? { kind: 'worker', workerId: claims.sub } : null;
 }
 
-export function requireUser(ctx: AppContext, minRole: Role = 'viewer'): onRequestAsyncHookHandler {
+export function requireUser(
+  ctx: AppContext,
+  minRole: Role = 'viewer',
+  /** The route is part of turning on two-step verification (open to staff without it). */
+  opts: { enrolling?: boolean } = {},
+): onRequestAsyncHookHandler {
   return async (req: FastifyRequest, _reply: FastifyReply) => {
     const token = bearer(req);
     const p = token ? await resolveUserToken(ctx, token) : null;
     if (!p || p.kind !== 'user') throw unauthorized();
     if (RANK[p.role] < RANK[minRole]) throw forbidden();
+    if (!opts.enrolling && mustEnroll(ctx.config, p)) throw mfaEnrollmentRequired();
     req.principal = p;
     req.log = req.log.child({ userId: p.userId });
   };
