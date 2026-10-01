@@ -5,8 +5,9 @@
 //!    strictly validated parameters, never code, paths, URLs or commands.
 //! 2. **Sandbox process** (`sandbox`, `bin/ghost-sandbox.rs`): a separate, short-lived
 //!    process per job with a scrubbed environment, an empty private working directory,
-//!    no inherited handles except stdin/stdout, and OS limits (Windows Job Object:
-//!    CPU hard cap, memory cap, one process, kill-on-close; Unix: rlimits, no_new_privs).
+//!    no inherited handles except stdin/stdout, and OS limits (Windows: AppContainer
+//!    with no capabilities — no network, no user files — inside a Job Object with CPU
+//!    hard cap, memory cap, one process, kill-on-close; Unix: rlimits, no_new_privs).
 //! 3. **WebAssembly** (`wasm`): Wasmtime with no WASI; the module can only compute and
 //!    call `ghost.progress`. Memory, stack and time are bounded.
 //!
@@ -21,6 +22,8 @@ pub use executor::Executor;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod inference;
+#[cfg(windows)]
+pub mod isolation;
 pub mod protocol;
 pub mod registry;
 pub mod sandbox;

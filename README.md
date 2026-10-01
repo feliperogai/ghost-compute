@@ -117,6 +117,7 @@ Abra o **PowerShell como administrador**:
 | Serviço rodando | `Get-Service GhostWorker` | `Running` |
 | Conta do serviço | `(Get-CimInstance Win32_Service -Filter "Name='GhostWorker'").StartName` | `NT SERVICE\GhostWorker` |
 | Agente responde | `& "$env:ProgramFiles\ghost\ghost-agent.exe" status` | JSON com `workerId`. `NOT_ENROLLED` = ainda não conectado (passo 6) |
+| Sandbox isolado | `& "$env:ProgramFiles\ghost\ghost-agent.exe" self-test` | `"ok": true`, isolamento `AppContainer (sem rede, sem arquivos do usuário) + Job Object` |
 | Código consumido | `Test-Path $env:ProgramData\ghost\enroll.ini` | `False` |
 | Configuração | `Get-Content $env:ProgramData\ghost\agent.toml` | `url = "https://ghost.seudominio.com"` |
 | Firewall | `Get-NetFirewallRule -DisplayName 'ghost Worker: sandbox sem rede'` | Outbound, Block. Nenhuma porta aberta |

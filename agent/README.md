@@ -7,15 +7,16 @@ applies the owner's limits and talks to the control plane over HTTPS.
 for the desktop app, and **isolated execution** of registered workloads (see
 [ADR 003](../docs/adr/003-isolated-execution.md)).
 Also done: Windows service mode and the installer ([installer/windows](../installer/windows/README.md)).
-**Next:** AppContainer for the sandbox process, self-update.
+**Next:** self-update.
 
 ## Execution
 
 Only built-in workload types run: `benchmark` and `image-inference` ([ADR 004](../docs/adr/004-image-inference.md)). A job carries a type and strictly
 validated parameters, never code. Each job runs in a fresh `ghost-sandbox` process
-(empty environment, private temp dir, Job Object / rlimits) hosting Wasmtime with no
-WASI; the module is embedded in the binary and pinned by SHA-256. `ghost-sandbox` must
-sit next to `ghost-agent`; without it execution is disabled and no types are declared.
+(empty environment, private temp dir; Windows: AppContainer with no capabilities inside
+a Job Object; Linux: seccomp + rlimits) hosting Wasmtime with no WASI; the module is embedded in the binary and pinned by SHA-256. `ghost-sandbox` must
+sit next to `ghost-agent`; without it, or if its start-up self-test fails, execution is
+disabled and no types are declared. `ghost-agent self-test` runs that check by hand.
 Rebuild modules with `../workloads/build.sh` (prints the new hash to pin).
 `image-inference` streams verified images into the sandbox, runs the dense layers on a GPU
 (wgpu, our fixed shader; cargo feature `gpu`, on by default) when the owner shares one, and

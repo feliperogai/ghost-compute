@@ -10,7 +10,7 @@ describe('headline', () => {
     expect(headline(base)).toEqual({
       tone: 'waiting',
       title: 'Aguardando',
-      detail: 'Esta versão do agente ainda não executa trabalhos',
+      detail: 'O isolamento (sandbox) deste computador não passou na verificação: nenhum trabalho roda. Veja os logs',
     });
   });
 
